@@ -1,0 +1,686 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>Roslyn Rocketeer VR - Meta Quest 3</title>
+  <!-- A-Frame VR Framework (v1.5.0) -->
+  <script src="https://aframe.io/releases/1.5.0/aframe.min.js"></script>
+
+  <style>
+    /* 2D Desktop / Flat fallback overlay & styling */
+    body {
+      margin: 0;
+      overflow: hidden;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background-color: #000;
+    }
+    #desktop-instructions {
+      position: absolute;
+      bottom: 12px;
+      left: 12px;
+      color: #fff;
+      background: rgba(15, 23, 42, 0.85);
+      border: 2px solid #38bdf8;
+      border-radius: 12px;
+      padding: 10px 16px;
+      font-size: 13px;
+      z-index: 999;
+      pointer-events: none;
+      line-height: 1.4;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Instructions visible on flat desktop preview -->
+  <div id="desktop-instructions">
+    🥽 <b>Meta Quest 3 Controls:</b><br>
+    • <b>Right Thumbstick:</b> Forward / Back Thrust (Y) & Turn Yaw (X)<br>
+    • <b>Left Thumbstick:</b> Altitude Up / Down (Y)<br>
+    ⌨️ <b>Desktop Fallback:</b> WASD = Move/Turn, Space/Shift = Up/Down
+  </div>
+
+  <script>
+  // ============================================================================
+  // 1. GLOBAL GAME CONFIGURATION (EASY TO TWEAK)
+  // ============================================================================
+
+  /**
+   * SHOW_COLLISION_BOXES:
+   * Set to TRUE to display bright red semi-transparent 3D boxes over all buildings.
+   * Set to FALSE when you are done calibrating to make building barriers invisible.
+   */
+  const SHOW_COLLISION_BOXES = true;
+
+  // Ground Terrain Dimensions in meters (Width along X, Depth along Z)
+  const MAP_WIDTH = 160; 
+  const MAP_DEPTH = 128;
+
+  // Flight Physics Tuning
+  const FLIGHT_CONFIG = {
+    thrustAccel: 14.0,   // Forward/Backward acceleration (m/s²)
+    verticalSpeed: 8.0,  // Up/Down climbing speed (m/s)
+    yawSpeed: 65.0,      // Turning rotation speed (degrees/sec)
+    drag: 0.94,          // Inertial gliding resistance (0.90 = snappy, 0.98 = icy)
+    minAltitude: 1.2,    // Ground floor clearance (meters)
+    maxAltitude: 25.0,   // Flight ceiling (meters)
+    playerRadius: 1.2    // Collision bounding bubble around the rocket
+  };
+
+  // Launch Pad / Home Base Location (Front Entrance Walkway)
+  const HOME_BASE = {
+    x: -12.0,            // X coordinate in meters
+    z: 48.5,             // Z coordinate in meters
+    radius: 4.5,         // Trigger radius to land and finish the mission
+    startHeight: 2.5     // Starting altitude
+  };
+
+  // ============================================================================
+  // 2. COLLECTIBLE COINS ("ROCK-BUCKS") LOCATIONS
+  // Edit X, Z coordinates to reposition the 7 coins across the school ground.
+  // ============================================================================
+  const COIN_CONFIGS = [
+    { id: 1, name: "Basketball Courts",  x: -53.5, y: 2.2, z: -47.0 },
+    { id: 2, name: "Playground Canopy",  x: -28.0, y: 3.0, z: -32.5 },
+    { id: 3, name: "Courtyard Chess",    x: -36.5, y: 2.0, z:   5.0 },
+    { id: 4, name: "Grassy Oval Field",  x:  30.5, y: 2.5, z: -29.5 },
+    { id: 5, name: "Cricket Pitch",      x:  35.0, y: 2.0, z: -23.5 },
+    { id: 6, name: "Garden Canopy",      x:  53.5, y: 2.5, z:  30.5 },
+    { id: 7, name: "Sandpit Play Area",  x:  54.0, y: 2.2, z:  19.0 }
+  ];
+
+  // ============================================================================
+  // 3. 3D NO-FLY COLLISION BOXES (BUILDINGS & OBSTACLES)
+  // Each box defines an axis-aligned 3D obstacle [x, z, width, depth, height]
+  // ============================================================================
+  const BUILDING_BOXES = [
+    // Main Central Hall & Angled Classrooms Wing
+    { name: "Central Hall",            x: -20.0, z:  -6.0, w: 38.0, d: 28.0, h: 8.0 },
+    // Lower Classrooms Wing (Bottom-Left)
+    { name: "South-West Classrooms",   x: -34.0, z:  35.0, w: 44.0, d: 20.0, h: 7.0 },
+    // Middle-Bottom Square Admin / Library Block
+    { name: "Admin Building",          x:   7.5, z:  22.0, w: 18.0, d: 18.0, h: 7.0 },
+    // Far-Left Modular Classrooms
+    { name: "West Modular Building",   x: -70.0, z:  24.0, w: 14.0, d: 22.0, h: 6.0 },
+    // Left-Center Classrooms
+    { name: "West-Center Classrooms",  x: -58.0, z:   2.0, w: 18.0, d: 24.0, h: 6.0 },
+    // Top-Left Classrooms / Shed
+    { name: "North-West Classrooms",   x: -38.0, z: -34.0, w: 14.0, d: 24.0, h: 6.0 },
+    // Small Courtyard Utility Block
+    { name: "Courtyard Shed",          x:  -4.0, z: -24.0, w:  8.0, d:  8.0, h: 4.5 },
+    // School Outer Boundary Walls / Fences
+    { name: "North Boundary Fence",    x:   0.0, z: -64.0, w: 160.0, d:  2.0, h: 6.0 },
+    { name: "South Boundary Fence",    x:   0.0, z:  64.0, w: 160.0, d:  2.0, h: 6.0 },
+    { name: "West Boundary Fence",     x: -80.0, z:   0.0, w:   2.0, d: 128.0, h: 6.0 },
+    { name: "East Boundary Fence",     x:  80.0, z:   0.0, w:   2.0, d: 128.0, h: 6.0 }
+  ];
+
+  // ============================================================================
+  // 4. WEB AUDIO SYNTHESIZER (Spatial sound effects for VR)
+  // ============================================================================
+  let audioCtx = null;
+  function initAudio() {
+    if (!audioCtx) {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    }
+    if (audioCtx.state === 'suspended') {
+      audioCtx.resume();
+    }
+  }
+
+  function playSound(type) {
+    if (!audioCtx) return;
+    const now = audioCtx.currentTime;
+
+    if (type === 'coin') {
+      // Cheerful chime
+      [523.25, 659.25, 783.99, 1046.50].forEach((f, i) => {
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(f, now + i * 0.05);
+        gain.gain.setValueAtTime(0.2, now + i * 0.05);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + i * 0.05 + 0.18);
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+        osc.start(now + i * 0.05);
+        osc.stop(now + i * 0.05 + 0.18);
+      });
+    } else if (type === 'bounce') {
+      // Soft bouncy impact
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(160, now);
+      osc.frequency.exponentialRampToValueAtTime(40, now + 0.15);
+      gain.gain.setValueAtTime(0.3, now);
+      gain.gain.linearRampToValueAtTime(0.01, now + 0.15);
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.start(now);
+      osc.stop(now + 0.15);
+    } else if (type === 'win') {
+      // Victory Fanfare
+      [523.25, 659.25, 783.99, 1046.50, 1318.51].forEach((f, i) => {
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.type = 'square';
+        osc.frequency.setValueAtTime(f, now + i * 0.12);
+        gain.gain.setValueAtTime(0.15, now + i * 0.12);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + i * 0.12 + 0.35);
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+        osc.start(now + i * 0.12);
+        osc.stop(now + i * 0.12 + 0.35);
+      });
+    }
+  }
+
+  // ============================================================================
+  // 5. A-FRAME SYSTEM & FLIGHT CONTROLS COMPONENT
+  // ============================================================================
+  AFRAME.registerComponent('game-manager', {
+    init: function () {
+      this.collectedCount = 0;
+      this.totalCoins = COIN_CONFIGS.length;
+      this.isGameActive = false;
+      this.isWon = false;
+      this.startTime = 0;
+      this.finalTime = 0;
+
+      // Spawn coins and collision boxes into the scene
+      this.spawnCoins();
+      this.spawnBuildingCollisionBoxes();
+
+      // UI Element References
+      this.hudScore = document.querySelector('#hud-score');
+      this.hudTimer = document.querySelector('#hud-timer');
+      this.hudBanner = document.querySelector('#hud-banner');
+      this.victoryPanel = document.querySelector('#victory-panel');
+      this.victoryTimeText = document.querySelector('#victory-time-text');
+      this.baseBeacon = document.querySelector('#base-beacon');
+
+      // Start audio on first user click or trigger press
+      window.addEventListener('click', initAudio, { once: true });
+      window.addEventListener('keydown', initAudio, { once: true });
+
+      // Automatically launch game on load
+      this.startGame();
+    },
+
+    startGame: function () {
+      this.collectedCount = 0;
+      this.isWon = false;
+      this.isGameActive = true;
+      this.startTime = performance.now();
+      this.victoryPanel.setAttribute('visible', 'false');
+      this.baseBeacon.setAttribute('material', 'color: #38bdf8; opacity: 0.35');
+      this.updateHUD();
+
+      // Reset coin states
+      const coinEntities = document.querySelectorAll('.coin-entity');
+      coinEntities.forEach(el => {
+        el.setAttribute('visible', 'true');
+        el.dataset.collected = "false";
+      });
+    },
+
+    spawnCoins: function () {
+      const container = document.querySelector('#coins-container');
+      COIN_CONFIGS.forEach(c => {
+        // Create 3D Gold Coin Entity
+        const coinEl = document.createElement('a-entity');
+        coinEl.setAttribute('class', 'coin-entity');
+        coinEl.setAttribute('position', `${c.x} ${c.y} ${c.z}`);
+        coinEl.dataset.coinId = c.id;
+        coinEl.dataset.collected = "false";
+        coinEl.dataset.posX = c.x;
+        coinEl.dataset.posY = c.y;
+        coinEl.dataset.posZ = c.z;
+
+        // 3D Coin Model (Double-sided golden cylinder with rim)
+        coinEl.innerHTML = `
+          <a-cylinder 
+            radius="1.2" 
+            height="0.22" 
+            rotation="90 0 0" 
+            material="color: #fbbf24; metalness: 0.85; roughness: 0.2; emissive: #d97706; emissiveIntensity: 0.3"
+            animation="property: rotation; to: 90 360 0; loop: true; dur: 2400; easing: linear">
+          </a-cylinder>
+          <a-ring 
+            radius-inner="0.6" 
+            radius-outer="1.1" 
+            position="0 0 0.12" 
+            material="color: #fef08a; metalness: 0.9; roughness: 0.1; side: double">
+          </a-ring>
+        `;
+        container.appendChild(coinEl);
+      });
+    },
+
+    spawnBuildingCollisionBoxes: function () {
+      const container = document.querySelector('#buildings-container');
+      BUILDING_BOXES.forEach(b => {
+        const boxEl = document.createElement('a-box');
+        boxEl.setAttribute('position', `${b.x} ${b.h / 2} ${b.z}`);
+        boxEl.setAttribute('width', b.w);
+        boxEl.setAttribute('height', b.h);
+        boxEl.setAttribute('depth', b.d);
+
+        if (SHOW_COLLISION_BOXES) {
+          // Visual Debug: Bright red semi-transparent bounding box with wireframe edge
+          boxEl.setAttribute('material', 'color: #ef4444; opacity: 0.45; transparent: true; wireframe: false');
+          
+          // Wireframe outline for crisp visualization
+          const outline = document.createElement('a-box');
+          outline.setAttribute('position', `0 0 0`);
+          outline.setAttribute('width', b.w);
+          outline.setAttribute('height', b.h);
+          outline.setAttribute('depth', b.d);
+          outline.setAttribute('material', 'color: #ffffff; wireframe: true; opacity: 0.8');
+          boxEl.appendChild(outline);
+        } else {
+          // Invisible solid barrier
+          boxEl.setAttribute('material', 'visible: false');
+        }
+        container.appendChild(boxEl);
+      });
+    },
+
+    collectCoin: function (coinEl) {
+      if (coinEl.dataset.collected === "true") return;
+      coinEl.dataset.collected = "true";
+      coinEl.setAttribute('visible', 'false');
+      this.collectedCount++;
+      playSound('coin');
+      this.updateHUD();
+
+      // Trigger landing beacon when all 7 are gathered
+      if (this.collectedCount >= this.totalCoins) {
+        this.baseBeacon.setAttribute('material', 'color: #22c55e; opacity: 0.75; emissive: #22c55e; emissiveIntensity: 0.5');
+      }
+    },
+
+    checkVictory: function () {
+      if (this.isWon || this.collectedCount < this.totalCoins) return;
+      this.isWon = true;
+      this.isGameActive = false;
+      this.finalTime = (performance.now() - this.startTime) / 1000;
+      playSound('win');
+
+      // Display 3D VR Victory Announcement Panel
+      this.victoryTimeText.setAttribute('value', `FINAL TIME: ${this.finalTime.toFixed(2)}s`);
+      this.victoryPanel.setAttribute('visible', 'true');
+      this.hudBanner.setAttribute('value', '🌟 MISSION ACCOMPLISHED! EXCELLENT FLYING! 🌟');
+    },
+
+    updateHUD: function () {
+      this.hudScore.setAttribute('value', `Rock-Bucks: ${this.collectedCount} / ${this.totalCoins}`);
+      if (this.collectedCount < this.totalCoins) {
+        this.hudBanner.setAttribute('value', `Collect all ${this.totalCoins - this.collectedCount} remaining Rock-Bucks!`);
+      } else {
+        this.hudBanner.setAttribute('value', `🎯 ALL COINS FOUND! Return to the Launch Pad!`);
+      }
+    },
+
+    tick: function () {
+      if (this.isGameActive && !this.isWon) {
+        const elapsedSecs = (performance.now() - this.startTime) / 1000;
+        this.hudTimer.setAttribute('value', `Time: ${elapsedSecs.toFixed(2)}s`);
+      }
+    }
+  });
+
+  // ============================================================================
+  // 6. 3D FLIGHT MOVEMENT & CONTROLLER PHYSICS COMPONENT
+  // ============================================================================
+  AFRAME.registerComponent('flight-controls', {
+    init: function () {
+      this.velocity = new THREE.Vector3(0, 0, 0);
+      this.yaw = 0; // Current heading in radians
+      this.pitch = 0;
+      this.roll = 0;
+
+      // Keyboard input state
+      this.keys = {
+        forward: false,
+        backward: false,
+        left: false,
+        right: false,
+        up: false,
+        down: false
+      };
+
+      // Rig & Camera hierarchy
+      this.rig = this.el;
+      this.gameManager = document.querySelector('a-scene').components['game-manager'];
+
+      // Setup Keyboard Listeners
+      window.addEventListener('keydown', (e) => this.onKeyDown(e));
+      window.addEventListener('keyup', (e) => this.onKeyUp(e));
+
+      // Spawn initial position at Home Base
+      this.rig.object3D.position.set(HOME_BASE.x, HOME_BASE.startHeight, HOME_BASE.z);
+    },
+
+    onKeyDown: function (e) {
+      initAudio();
+      if (e.code === 'KeyW' || e.code === 'ArrowUp')    this.keys.forward = true;
+      if (e.code === 'KeyS' || e.code === 'ArrowDown')  this.keys.backward = true;
+      if (e.code === 'KeyA' || e.code === 'ArrowLeft')  this.keys.left = true;
+      if (e.code === 'KeyD' || e.code === 'ArrowRight') this.keys.right = true;
+      if (e.code === 'Space')                           this.keys.up = true;
+      if (e.code === 'ShiftLeft' || e.code === 'KeyC')  this.keys.down = true;
+      if (e.code === 'KeyR') {
+        // Quick Reset
+        this.rig.object3D.position.set(HOME_BASE.x, HOME_BASE.startHeight, HOME_BASE.z);
+        this.velocity.set(0, 0, 0);
+        this.gameManager.startGame();
+      }
+    },
+
+    onKeyUp: function (e) {
+      if (e.code === 'KeyW' || e.code === 'ArrowUp')    this.keys.forward = false;
+      if (e.code === 'KeyS' || e.code === 'ArrowDown')  this.keys.backward = false;
+      if (e.code === 'KeyA' || e.code === 'ArrowLeft')  this.keys.left = false;
+      if (e.code === 'KeyD' || e.code === 'ArrowRight') this.keys.right = false;
+      if (e.code === 'Space')                           this.keys.up = false;
+      if (e.code === 'ShiftLeft' || e.code === 'KeyC')  this.keys.down = false;
+    },
+
+    // Poll Meta Quest 3 Gamepads (Thumbsticks) directly from WebXR Gamepad API
+    pollXRGamepads: function () {
+      const input = {
+        thrust: 0,   // Forward / Backward (-1 to +1)
+        yawTurn: 0,  // Yaw Turn Left / Right (-1 to +1)
+        altitude: 0  // Altitude Up / Down (-1 to +1)
+      };
+
+      // 1. Check Keyboard Inputs
+      if (this.keys.forward)  input.thrust += 1.0;
+      if (this.keys.backward) input.thrust -= 1.0;
+      if (this.keys.left)     input.yawTurn -= 1.0;
+      if (this.keys.right)    input.yawTurn += 1.0;
+      if (this.keys.up)       input.altitude += 1.0;
+      if (this.keys.down)     input.altitude -= 1.0;
+
+      // 2. Check Meta Quest 3 WebXR Gamepads
+      const gamepads = navigator.getGamepads ? navigator.getGamepads() : [];
+      for (let i = 0; i < gamepads.length; i++) {
+        const gp = gamepads[i];
+        if (!gp || !gp.connected) continue;
+
+        // Meta Quest 3 Hand Controller Thumbsticks are mapped to axes[2] (X) and axes[3] (Y)
+        const axisX = gp.axes.length > 2 ? gp.axes[2] : gp.axes[0];
+        const axisY = gp.axes.length > 3 ? gp.axes[3] : gp.axes[1];
+        const deadzone = 0.12;
+
+        if (gp.hand === 'right') {
+          // Right Thumbstick Y: Forward (-1) / Backward (+1)
+          if (Math.abs(axisY) > deadzone) {
+            input.thrust -= axisY; // Invert so pushing forward thrusts forward
+          }
+          // Right Thumbstick X: Yaw Left (-1) / Right (+1)
+          if (Math.abs(axisX) > deadzone) {
+            input.yawTurn += axisX;
+          }
+        } else if (gp.hand === 'left') {
+          // Left Thumbstick Y: Climb Up (-1) / Descend Down (+1)
+          if (Math.abs(axisY) > deadzone) {
+            input.altitude -= axisY; // Invert so pushing up climbs
+          }
+        }
+      }
+
+      return input;
+    },
+
+    // Test and resolve 3D Axis-Aligned Bounding Box (AABB) collisions with buildings
+    resolveBuildingCollisions: function (pos) {
+      const pRadius = FLIGHT_CONFIG.playerRadius;
+
+      BUILDING_BOXES.forEach(b => {
+        const minX = b.x - b.w / 2;
+        const maxX = b.x + b.w / 2;
+        const minZ = b.z - b.d / 2;
+        const maxZ = b.z + b.d / 2;
+        const minY = 0;
+        const maxY = b.h;
+
+        // Check if player's bounding sphere intersects the box
+        if (pos.x + pRadius > minX && pos.x - pRadius < maxX &&
+            pos.z + pRadius > minZ && pos.z - pRadius < maxZ &&
+            pos.y - pRadius < maxY && pos.y + pRadius > minY) {
+
+          // Find closest wall surface to push player out smoothly
+          const dxMin = Math.abs((pos.x + pRadius) - minX);
+          const dxMax = Math.abs((pos.x - pRadius) - maxX);
+          const dzMin = Math.abs((pos.z + pRadius) - minZ);
+          const dzMax = Math.abs((pos.z - pRadius) - maxZ);
+          const dyMax = Math.abs((pos.y - pRadius) - maxY);
+
+          const minPush = Math.min(dxMin, dxMax, dzMin, dzMax, dyMax);
+
+          if (minPush === dxMin) { pos.x = minX - pRadius; this.velocity.x *= -0.3; }
+          else if (minPush === dxMax) { pos.x = maxX + pRadius; this.velocity.x *= -0.3; }
+          else if (minPush === dzMin) { pos.z = minZ - pRadius; this.velocity.z *= -0.3; }
+          else if (minPush === dzMax) { pos.z = maxZ + pRadius; this.velocity.z *= -0.3; }
+          else if (minPush === dyMax) { pos.y = maxY + pRadius; this.velocity.y = 0; }
+
+          playSound('bounce');
+        }
+      });
+    },
+
+    // Check Proximity with Coins & Base Return
+    checkTriggerOverlaps: function (pos) {
+      // 1. Coin pickups
+      const coins = document.querySelectorAll('.coin-entity');
+      coins.forEach(el => {
+        if (el.dataset.collected === "false") {
+          const cx = parseFloat(el.dataset.posX);
+          const cy = parseFloat(el.dataset.posY);
+          const cz = parseFloat(el.dataset.posZ);
+          const dist = Math.hypot(pos.x - cx, pos.y - cy, pos.z - cz);
+
+          if (dist < 2.4) {
+            this.gameManager.collectCoin(el);
+          }
+        }
+      });
+
+      // 2. Home base trigger (when all 7 coins gathered)
+      if (this.gameManager.collectedCount >= this.gameManager.totalCoins) {
+        const distToBase = Math.hypot(pos.x - HOME_BASE.x, pos.z - HOME_BASE.z);
+        if (distToBase < HOME_BASE.radius && pos.y < 5.0) {
+          this.gameManager.checkVictory();
+        }
+      }
+    },
+
+    tick: function (time, deltaTime) {
+      if (!deltaTime) return;
+      const dt = Math.min(deltaTime / 1000, 0.1); // Clamp delta time
+
+      const input = this.pollXRGamepads();
+      const pos = this.rig.object3D.position;
+
+      // 1. Yaw Turning Rotation
+      if (Math.abs(input.yawTurn) > 0.01) {
+        const yawDelta = -input.yawTurn * THREE.MathUtils.degToRad(FLIGHT_CONFIG.yawSpeed) * dt;
+        this.yaw += yawDelta;
+        this.rig.object3D.rotation.y = this.yaw;
+      }
+
+      // 2. Forward / Backward Thrust acceleration in current heading direction
+      if (Math.abs(input.thrust) > 0.01) {
+        const forwardVector = new THREE.Vector3(0, 0, -1).applyAxisAngle(new THREE.Vector3(0, 1, 0), this.yaw);
+        this.velocity.addScaledVector(forwardVector, input.thrust * FLIGHT_CONFIG.thrustAccel * dt);
+
+        // Cockpit slight pitch tilt for flight feel
+        this.pitch = THREE.MathUtils.lerp(this.pitch, input.thrust * 0.12, 0.1);
+      } else {
+        this.pitch = THREE.MathUtils.lerp(this.pitch, 0, 0.1);
+      }
+
+      // 3. Vertical Altitude Climb / Descent
+      if (Math.abs(input.altitude) > 0.01) {
+        this.velocity.y = input.altitude * FLIGHT_CONFIG.verticalSpeed;
+      } else {
+        this.velocity.y *= 0.85; // Quick vertical stop
+      }
+
+      // 4. Gliding Drag / Inertia
+      this.velocity.x *= FLIGHT_CONFIG.drag;
+      this.velocity.z *= FLIGHT_CONFIG.drag;
+
+      // 5. Update Rig Position
+      pos.x += this.velocity.x * dt;
+      pos.y += this.velocity.y * dt;
+      pos.z += this.velocity.z * dt;
+
+      // 6. Altitude Clamping
+      if (pos.y < FLIGHT_CONFIG.minAltitude) {
+        pos.y = FLIGHT_CONFIG.minAltitude;
+        this.velocity.y = 0;
+      }
+      if (pos.y > FLIGHT_CONFIG.maxAltitude) {
+        pos.y = FLIGHT_CONFIG.maxAltitude;
+        this.velocity.y = 0;
+      }
+
+      // 7. Resolve Solid Building & Perimeter Collisions
+      this.resolveBuildingCollisions(pos);
+
+      // 8. Test Coin Pickups & Base Landing
+      this.checkTriggerOverlaps(pos);
+
+      // Animate Cockpit Rocket Model tilt in front of camera
+      const rocketCockpit = document.querySelector('#cockpit-rocket');
+      if (rocketCockpit) {
+        const rollTilt = -input.yawTurn * 0.25;
+        rocketCockpit.object3D.rotation.z = THREE.MathUtils.lerp(rocketCockpit.object3D.rotation.z, rollTilt, 0.1);
+        rocketCockpit.object3D.rotation.x = this.pitch;
+      }
+    }
+  });
+  </script>
+
+  <!-- ======================================================================== -->
+  <!-- A-FRAME 3D SCENE                                                         -->
+  <!-- ======================================================================== -->
+  <a-scene game-manager renderer="antialias: true; colorManagement: true" vr-mode-ui="enabled: true">
+    
+    <!-- Asset Library -->
+    <a-assets>
+      <!-- School Map Texture (School.png) -->
+      <img id="schoolTexture" src="School.png" crossorigin="anonymous">
+      <!-- Rocket Texture (Rocket.png) -->
+      <img id="rocketTexture" src="Rocket.png" crossorigin="anonymous">
+    </a-assets>
+
+    <!-- Sky Environment -->
+    <a-sky color="#60a5fa"></a-sky>
+
+    <!-- Sun & Ambient Lights -->
+    <a-light type="ambient" color="#ffffff" intensity="0.85"></a-light>
+    <a-light type="directional" position="30 60 40" intensity="0.9" color="#fef08a"></a-light>
+
+    <!-- 1. Ground Plane (School Aerial Map) -->
+    <a-plane 
+      id="groundMap"
+      position="0 0 0" 
+      rotation="-90 0 0" 
+      width="160" 
+      height="128" 
+      material="src: #schoolTexture; roughness: 0.8; metalness: 0.1"
+      shadow="receive: true">
+    </a-plane>
+
+    <!-- Surrounding Grass Extension for Horizon -->
+    <a-plane 
+      position="0 -0.05 0" 
+      rotation="-90 0 0" 
+      width="600" 
+      height="600" 
+      material="color: #4d7c0f; roughness: 1.0">
+    </a-plane>
+
+    <!-- 2. Home Base / Launch Pad Visual Beacon -->
+    <a-entity id="base-beacon-group" position="-12.0 0.1 48.5">
+      <!-- Ground Circle -->
+      <a-circle 
+        id="base-beacon" 
+        radius="4.5" 
+        rotation="-90 0 0" 
+        material="color: #38bdf8; opacity: 0.4; side: double; transparent: true">
+      </a-circle>
+      <!-- Glowing Cylinder Ring -->
+      <a-cylinder 
+        radius="4.5" 
+        height="8" 
+        open-ended="true" 
+        position="0 4 0" 
+        material="color: #38bdf8; opacity: 0.15; side: double; transparent: true"
+        animation="property: material.opacity; to: 0.35; dir: alternate; loop: true; dur: 1200">
+      </a-cylinder>
+      <a-text value="LAUNCH BASE" align="center" position="0 2.5 0" scale="2 2 2" color="#ffffff"></a-text>
+    </a-entity>
+
+    <!-- 3. Dynamic Containers for Coins and Building Obstacles -->
+    <a-entity id="coins-container"></a-entity>
+    <a-entity id="buildings-container"></a-entity>
+
+    <!-- 4. PLAYER FLIGHT RIG (Camera, Cockpit Model, Controller & VR HUD) -->
+    <a-entity id="playerRig" flight-controls position="-12 2.5 48.5">
+      
+      <!-- VR Headset Camera -->
+      <a-camera id="headCamera" position="0 0 0" look-controls="pointerLockEnabled: false">
+        
+        <!-- Attached First-Person VR Flight HUD (Fixed 1.2m in front of eyes) -->
+        <a-entity position="0 0.35 -1.2">
+          <!-- Background HUD Banner Plaque -->
+          <a-plane width="1.6" height="0.45" material="color: #0f172a; opacity: 0.85; transparent: true; side: double">
+            <a-text id="hud-score" value="Rock-Bucks: 0 / 7" align="left" position="-0.72 0.1 0.01" scale="0.4 0.4 0.4" color="#fbbf24"></a-text>
+            <a-text id="hud-timer" value="Time: 0.00s" align="right" position="0.72 0.1 0.01" scale="0.4 0.4 0.4" color="#38bdf8"></a-text>
+            <a-text id="hud-banner" value="Collect all 7 Rock-Bucks!" align="center" position="0 -0.1 0.01" scale="0.32 0.32 0.32" color="#f8fafc"></a-text>
+          </a-plane>
+        </a-entity>
+
+        <!-- 3D Rocket Nose / Cockpit Model visible just below eye line -->
+        <a-entity id="cockpit-rocket" position="0 -0.45 -0.85" rotation="0 0 0">
+          <!-- Central Fuselage (2:1 slender proportion) -->
+          <a-cone radius-bottom="0.22" radius-top="0.02" height="0.85" position="0 0 -0.2" rotation="90 0 0" material="color: #ef4444; metalness: 0.4; roughness: 0.3"></a-cone>
+          <a-cylinder radius="0.22" height="0.6" position="0 0 0.2" rotation="90 0 0" material="color: #dc2626; metalness: 0.4"></a-cylinder>
+          <!-- Cockpit Window -->
+          <a-sphere radius="0.12" position="0 0.12 -0.1" material="color: #0284c7; metalness: 0.9; roughness: 0.1; opacity: 0.9"></a-sphere>
+          <!-- Left Wing / Fin -->
+          <a-box width="0.4" height="0.04" depth="0.35" position="-0.32 -0.05 0.35" rotation="0 25 15" material="color: #2563eb"></a-box>
+          <!-- Right Wing / Fin -->
+          <a-box width="0.4" height="0.04" depth="0.35" position="0.32 -0.05 0.35" rotation="0 -25 -15" material="color: #2563eb"></a-box>
+          <!-- Jet Thruster Flame Glow -->
+          <a-sphere radius="0.08" position="0 0 0.55" material="color: #f59e0b; emissive: #ef4444; emissiveIntensity: 0.9" animation="property: scale; to: 1.4 1.4 2.2; dir: alternate; loop: true; dur: 80"></a-sphere>
+        </a-entity>
+
+        <!-- Victory Banner (Appears when mission complete) -->
+        <a-entity id="victory-panel" position="0 0 -1.5" visible="false">
+          <a-plane width="2.2" height="1.1" material="color: #1e293b; opacity: 0.95; transparent: true">
+            <a-text value="🏆 MISSION COMPLETE! 🏆" align="center" position="0 0.35 0.01" scale="0.65 0.65 0.65" color="#fcd34d"></a-text>
+            <a-text id="victory-time-text" value="FINAL TIME: 00.00s" align="center" position="0 0.05 0.01" scale="0.85 0.85 0.85" color="#4ade80"></a-text>
+            <a-text value="Press 'R' or Trigger to Play Again" align="center" position="0 -0.32 0.01" scale="0.35 0.35 0.35" color="#94a3b8"></a-text>
+          </a-plane>
+        </a-entity>
+
+      </a-camera>
+
+      <!-- Meta Quest 3 Hand Controller Entities -->
+      <a-entity oculus-touch-controls="hand: left"></a-entity>
+      <a-entity oculus-touch-controls="hand: right"></a-entity>
+
+    </a-entity>
+
+  </a-scene>
+
+</body>
+</html>

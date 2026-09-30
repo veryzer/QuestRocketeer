@@ -40,6 +40,10 @@
     }
     #finish .kicker { letter-spacing: 0.08em; font-size: 13px; color: #fde68a; font-weight: 800; }
     #finish .big { font-size: 32px; font-weight: 800; margin-top: 4px; }
+    #finish .board-label { margin-top: 12px; font-size: 12px; letter-spacing: 0.06em; color: #94a3b8; font-weight: 700; }
+    #finish ol { margin: 6px 0 0; padding-left: 1.4em; text-align: left; }
+    #finish li { font-variant-numeric: tabular-nums; font-size: 16px; line-height: 1.45; }
+    #finish li:first-child { color: #fde68a; font-weight: 800; }
     .stick {
       position: fixed; bottom: 18px; z-index: 30; width: 116px; height: 116px;
       border-radius: 50%; background: rgba(15, 23, 42, 0.55);
@@ -62,18 +66,21 @@
 </head>
 <body>
   <div id="hud">
-    <div class="badge gold" id="score">Coins: 0</div>
+    <div class="badge gold" id="score">Coins: 0 / 12</div>
+    <div class="badge" id="timer">Time: 0:00.0</div>
     <div class="badge" id="status">On the pad — fly out to start</div>
   </div>
   <button id="enter-vr" type="button">Enter VR</button>
   <div id="help">
     <b>Quest.</b> Right stick: turn left/right, push forward to fly. Left stick: push forward to descend, pull back to climb.<br>
-    <b>Desktop.</b> A/D turn, W forward, Space climb, Shift descend. On-screen sticks match the controllers: right knob up flies forward, left knob up descends and down climbs.
+    <b>Desktop.</b> A/D turn, W forward, Space climb, Shift descend. On-screen sticks match the controllers: right knob up flies forward, left knob up descends and down climbs. Collect every coin, then return to the pad. The timer records that finish.
   </div>
   <div id="finish">
     <div class="card">
       <div class="kicker">ROUND COMPLETE</div>
-      <div class="big" id="finish-score">0 coins</div>
+      <div class="big" id="finish-time">0:00.0</div>
+      <div class="board-label">FASTEST TIMES</div>
+      <ol id="finish-board"></ol>
     </div>
   </div>
   <div id="stick-left" class="stick" aria-label="Altitude stick"><div class="knob"></div><span>ALTITUDE</span></div>
@@ -140,6 +147,9 @@
   const PAD_R = 5.0;
   const COIN_R = 2.35;
   const FENCE_HALF = 0.32;
+  const TIMES_KEY = "quest-rocketeer-times";
+  const HALF_W = MAP_W / 2;
+  const HALF_D = MAP_D / 2;
 
   function toWorld(px, py) {
     return {
@@ -161,6 +171,31 @@
   const PAD = toWorld(PAD_PX[0], PAD_PX[1]);
 
   function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+
+  function formatTime(seconds) {
+    const tenthsTotal = Math.max(0, Math.round(Number(seconds) * 10));
+    const tenths = tenthsTotal % 10;
+    const whole = Math.floor(tenthsTotal / 10);
+    const mins = Math.floor(whole / 60);
+    const secs = whole % 60;
+    return `${mins}:${String(secs).padStart(2, "0")}.${tenths}`;
+  }
+
+  function loadTimes() {
+    try {
+      const raw = JSON.parse(localStorage.getItem(TIMES_KEY) || "[]");
+      if (!Array.isArray(raw)) return [];
+      return raw.filter((n) => typeof n === "number" && isFinite(n) && n >= 0).sort((a, b) => a - b).slice(0, 10);
+    } catch (e) {
+      return [];
+    }
+  }
+
+  function saveTimes(times) {
+    try {
+      localStorage.setItem(TIMES_KEY, JSON.stringify(times.slice(0, 10)));
+    } catch (e) {}
+  }
   function deadzone(v) {
     const d = 0.12;
     if (Math.abs(v) < d) return 0;
@@ -260,6 +295,11 @@
       }
       if (pos.y < FLIGHT.minY) { pos.y = FLIGHT.minY; if (vel.y < 0) vel.y = 0; hit = true; }
       if (pos.y > FLIGHT.maxY) { pos.y = FLIGHT.maxY; if (vel.y > 0) vel.y = 0; hit = true; }
+      const r = FLIGHT.radius;
+      if (pos.x < -HALF_W + r) { pos.x = -HALF_W + r; bounce(vel, 1, 0); hit = true; }
+      if (pos.x > HALF_W - r) { pos.x = HALF_W - r; bounce(vel, -1, 0); hit = true; }
+      if (pos.z < -HALF_D + r) { pos.z = -HALF_D + r; bounce(vel, 0, 1); hit = true; }
+      if (pos.z > HALF_D - r) { pos.z = HALF_D - r; bounce(vel, 0, -1); hit = true; }
       if (!hit) break;
     }
   }
@@ -405,9 +445,13 @@
   AFRAME.registerComponent("flight-controls", {
     init: function () {
       this.velocity = new THREE.Vector3();
+      this.forwardSpeed = 0;
       this.yaw = 0;
       this.state = "ready";
       this.score = 0;
+      this.startedAt = 0;
+      this.elapsed = 0;
+      this.totalCoins = COIN_PX.length;
       this.cameraEl = this.el.querySelector("[camera]");
       this.keys = { forward: false, left: false, right: false, climb: false, descend: false };
       this.screen = { rx: 0, ry: 0, lx: 0, ly: 0, right: false, left: false };
@@ -430,16 +474,22 @@
 
       this.scoreEl = document.getElementById("score");
       this.statusEl = document.getElementById("status");
+      this.timerEl = document.getElementById("timer");
       this.finishEl = document.getElementById("finish");
-      this.finishScoreEl = document.getElementById("finish-score");
+      this.finishTimeEl = document.getElementById("finish-time");
+      this.finishBoardEl = document.getElementById("finish-board");
+      this.setScore(0);
+      this.updateTimer();
 
       this.lastPos = { x: PAD.x, y: startY, z: PAD.z };
       window.QUEST = {
         get: () => ({
           x: this.lastPos.x, y: this.lastPos.y, z: this.lastPos.z, yaw: this.yaw,
-          score: this.score, state: this.state, keys: { ...this.keys },
+          vx: this.velocity.x, vz: this.velocity.z, forwardSpeed: this.forwardSpeed,
+          score: this.score, state: this.state, elapsed: this.displayedSeconds(),
+          keys: { ...this.keys },
           maxY: FLIGHT.maxY, minY: FLIGHT.minY,
-          coins: COIN_PX.length
+          coins: COIN_PX.length, total: this.totalCoins
         })
       };
     },
@@ -537,19 +587,45 @@
 
     setScore: function (n) {
       this.score = n;
-      this.scoreEl.textContent = `Coins: ${n}`;
+      this.scoreEl.textContent = `Coins: ${n} / ${this.totalCoins}`;
     },
 
     setStatus: function (text) {
       this.statusEl.textContent = text;
     },
 
+    displayedSeconds: function () {
+      if (this.state === "flying" && this.startedAt) return (performance.now() - this.startedAt) / 1000;
+      if (this.state === "done") return this.elapsed;
+      return 0;
+    },
+
+    updateTimer: function () {
+      if (this.timerEl) this.timerEl.textContent = `Time: ${formatTime(this.displayedSeconds())}`;
+    },
+
+    renderBoard: function (times) {
+      this.finishBoardEl.innerHTML = "";
+      times.forEach((t) => {
+        const li = document.createElement("li");
+        li.textContent = formatTime(t);
+        this.finishBoardEl.appendChild(li);
+      });
+    },
+
     finishRound: function () {
+      this.elapsed = this.displayedSeconds();
       this.state = "done";
-      const line = `${this.score} coin${this.score === 1 ? "" : "s"}`;
+      const times = loadTimes();
+      times.push(this.elapsed);
+      times.sort((a, b) => a - b);
+      const top = times.slice(0, 10);
+      saveTimes(top);
       this.setStatus("Round complete");
-      this.finishScoreEl.textContent = line;
+      this.finishTimeEl.textContent = formatTime(this.elapsed);
+      this.renderBoard(top);
       this.finishEl.classList.add("show");
+      this.updateTimer();
     },
 
     collectCoins: function (pos) {
@@ -577,11 +653,14 @@
       this.yaw = Math.atan2(Math.sin(this.yaw), Math.cos(this.yaw));
       rig.rotation.y = this.yaw;
 
-      const speed = Math.exp(-FLIGHT.drag * dt);
-      this.velocity.x *= speed;
-      this.velocity.z *= speed;
-      this.velocity.x += Math.sin(this.yaw) * input.forward * FLIGHT.thrust * dt;
-      this.velocity.z += -Math.cos(this.yaw) * input.forward * FLIGHT.thrust * dt;
+      // Speed stays on the nose. Turning swings that velocity with the facing.
+      this.forwardSpeed *= Math.exp(-FLIGHT.drag * dt);
+      this.forwardSpeed += input.forward * FLIGHT.thrust * dt;
+      if (this.forwardSpeed < 0) this.forwardSpeed = 0;
+      const noseX = Math.sin(this.yaw);
+      const noseZ = -Math.cos(this.yaw);
+      this.velocity.x = noseX * this.forwardSpeed;
+      this.velocity.z = noseZ * this.forwardSpeed;
       if (Math.abs(input.climb) > 0.01) this.velocity.y = input.climb * FLIGHT.vertical;
       else this.velocity.y *= Math.exp(-8 * dt);
 
@@ -601,18 +680,32 @@
         pos.y += this.velocity.y * h;
         pos.z += this.velocity.z * h;
         resolveSolids(pos, this.velocity);
+        const along = this.velocity.x * noseX + this.velocity.z * noseZ;
+        this.forwardSpeed = Math.max(0, along);
+        this.velocity.x = noseX * this.forwardSpeed;
+        this.velocity.z = noseZ * this.forwardSpeed;
       }
       this.writeViewpoint(pos);
       this.lastPos = { x: pos.x, y: pos.y, z: pos.z };
       this.collectCoins(pos);
 
       const dist = Math.hypot(pos.x - PAD.x, pos.z - PAD.z);
+      const onPad = dist < PAD_R && pos.y < 3.4;
+      const allCoins = this.score >= this.totalCoins;
       if (this.state === "ready" && dist > PAD_R) {
         this.state = "flying";
+        this.startedAt = performance.now();
         this.setStatus("Round in progress");
-      } else if (this.state === "flying" && dist < PAD_R && pos.y < 3.4) {
+      } else if (this.state === "flying" && onPad && allCoins) {
         this.finishRound();
+      } else if (this.state === "flying" && onPad) {
+        this.setStatus("Collect every coin, then return");
+      } else if (this.state === "flying" && allCoins) {
+        this.setStatus("All coins — return to the pad");
+      } else if (this.state === "flying") {
+        this.setStatus("Round in progress");
       }
+      this.updateTimer();
     }
   });
   </script>
@@ -647,10 +740,6 @@
           material="color: #2563eb; roughness: 0.45"></a-box>
         <a-box class="fin" width="0.08" height="0.7" depth="0.62" position="0 -0.78 0.2"
           material="color: #1d4ed8; roughness: 0.45"></a-box>
-        <a-box width="0.05" height="0.55" depth="0.05" position="-0.34 -0.12 -0.35"
-          material="color: #b91c1c; roughness: 0.5"></a-box>
-        <a-box width="0.05" height="0.55" depth="0.05" position="0.34 -0.12 -0.35"
-          material="color: #b91c1c; roughness: 0.5"></a-box>
       </a-entity>
 
       <a-entity oculus-touch-controls="hand: left"></a-entity>

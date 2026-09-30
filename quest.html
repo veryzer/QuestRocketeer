@@ -73,7 +73,7 @@
   <button id="enter-vr" type="button">Enter VR</button>
   <div id="help">
     <b>Quest.</b> Right stick: turn left/right, push forward to fly. Left stick: push forward to descend, pull back to climb.<br>
-    <b>Desktop.</b> A/D turn, W forward, Space climb, Shift descend. On-screen sticks match the controllers: right knob up flies forward, left knob up descends and down climbs. Collect every coin, then return to the pad. The timer records that finish.
+    <b>Desktop.</b> A turns left, D turns right, W flies toward the nose, Space climbs, Shift descends. On-screen sticks match the controllers: right knob up flies forward, left knob up descends and down climbs. Collect every coin, then return to the pad. The timer records that finish.
   </div>
   <div id="finish">
     <div class="card">
@@ -458,6 +458,10 @@
       this.view = new THREE.Vector3();
       this.headLocal = new THREE.Vector3();
       this._offset = new THREE.Vector3();
+      this.nose = new THREE.Vector3(0, 0, -1);
+      this.touchStick = { rx: 0, ry: 0, lx: 0, ly: 0 };
+      this.lastInputSource = "none";
+      this.lastSticks = { rx: 0, ry: 0, lx: 0, ly: 0 };
 
       const startY = FLIGHT.minY;
       this.el.object3D.position.set(PAD.x, startY, PAD.z);
@@ -467,8 +471,16 @@
       window.addEventListener("keyup", (e) => this.onKey(e, false));
       this.bindStick(document.getElementById("stick-right"), "right");
       this.bindStick(document.getElementById("stick-left"), "left");
+      this.bindTouch(this.el.querySelector("#right-hand"), "right");
+      this.bindTouch(this.el.querySelector("#left-hand"), "left");
 
       const scene = this.el.sceneEl;
+      scene.addEventListener("exit-vr", () => {
+        this.touchStick.rx = 0;
+        this.touchStick.ry = 0;
+        this.touchStick.lx = 0;
+        this.touchStick.ly = 0;
+      });
       const enter = document.getElementById("enter-vr");
       enter.addEventListener("click", () => scene.enterVR());
 
@@ -488,6 +500,9 @@
           vx: this.velocity.x, vz: this.velocity.z, forwardSpeed: this.forwardSpeed,
           score: this.score, state: this.state, elapsed: this.displayedSeconds(),
           keys: { ...this.keys },
+          noseX: this.nose.x, noseZ: this.nose.z,
+          inputSource: this.lastInputSource,
+          sticks: { ...this.lastSticks },
           maxY: FLIGHT.maxY, minY: FLIGHT.minY,
           coins: COIN_PX.length, total: this.totalCoins
         })
@@ -531,18 +546,67 @@
       el.addEventListener("pointercancel", end);
     },
 
+    bindTouch: function (el, hand) {
+      if (!el) return;
+      el.addEventListener("thumbstickmoved", (evt) => {
+        const x = evt.detail && typeof evt.detail.x === "number" ? evt.detail.x : 0;
+        const y = evt.detail && typeof evt.detail.y === "number" ? evt.detail.y : 0;
+        if (hand === "right") { this.touchStick.rx = x; this.touchStick.ry = y; }
+        else { this.touchStick.lx = x; this.touchStick.ly = y; }
+      });
+    },
+
+    // WebXR xr-standard puts the Touch thumbstick on axes 2 and 3.
+    // x > 0 is right, y < 0 is pushed forward (the same sense as the on-screen sticks).
+    stickAxes: function (gp) {
+      if (!gp || !gp.axes || gp.axes.length < 2) return null;
+      if (gp.axes.length >= 4) return { x: gp.axes[2] || 0, y: gp.axes[3] || 0 };
+      return { x: gp.axes[0] || 0, y: gp.axes[1] || 0 };
+    },
+
+    activeXRSession: function () {
+      const scene = this.el.sceneEl;
+      if (scene && scene.xrSession) return scene.xrSession;
+      const renderer = scene && scene.renderer;
+      if (renderer && renderer.xr && typeof renderer.xr.getSession === "function") {
+        return renderer.xr.getSession();
+      }
+      return null;
+    },
+
+    readSessionSticks: function () {
+      const session = this.activeXRSession();
+      const out = { rx: 0, ry: 0, lx: 0, ly: 0, seen: false };
+      if (!session || !session.inputSources) return out;
+      const sources = session.inputSources;
+      for (let i = 0; i < sources.length; i++) {
+        const source = sources[i];
+        if (!source) continue;
+        const hand = source.handedness;
+        if (hand !== "left" && hand !== "right") continue;
+        const axis = this.stickAxes(source.gamepad);
+        if (!axis) continue;
+        if (hand === "right") { out.rx += axis.x; out.ry += axis.y; }
+        else { out.lx += axis.x; out.ly += axis.y; }
+        out.seen = true;
+      }
+      return out;
+    },
+
     readInput: function () {
       let rx = 0, ry = 0, lx = 0, ly = 0;
-      const pads = navigator.getGamepads ? navigator.getGamepads() : [];
-      for (let i = 0; i < pads.length; i++) {
-        const gp = pads[i];
-        if (!gp || !gp.connected) continue;
-        if (gp.hand !== "left" && gp.hand !== "right") continue;
-        const x = gp.axes.length >= 4 ? gp.axes[2] : gp.axes[0];
-        const y = gp.axes.length >= 4 ? gp.axes[3] : gp.axes[1];
-        if (gp.hand === "right") { rx += x; ry += y; }
-        else { lx += x; ly += y; }
+      const live = this.readSessionSticks();
+      if (live.seen) {
+        rx = live.rx; ry = live.ry; lx = live.lx; ly = live.ly;
+        this.lastInputSource = "xr";
+      } else if (this.touchStick.rx || this.touchStick.ry || this.touchStick.lx || this.touchStick.ly) {
+        rx = this.touchStick.rx; ry = this.touchStick.ry;
+        lx = this.touchStick.lx; ly = this.touchStick.ly;
+        this.lastInputSource = "thumbstick";
+      } else {
+        this.lastInputSource = "none";
       }
+      this.lastSticks = { rx: rx, ry: ry, lx: lx, ly: ly };
       if (this.screen.right) { rx += this.screen.rx; ry += this.screen.ry; }
       if (this.screen.left) { lx += this.screen.lx; ly += this.screen.ly; }
 
@@ -649,16 +713,24 @@
       const input = this.readInput();
       const rig = this.el.object3D;
 
-      this.yaw += input.turn * THREE.MathUtils.degToRad(FLIGHT.yawSpeed) * dt;
+      // Positive rig yaw sends the nose (local -Z) toward world -X, the pilot's left.
+      // A and a left thumbstick deflect that way; D and stick-right do the opposite.
+      this.yaw -= input.turn * THREE.MathUtils.degToRad(FLIGHT.yawSpeed) * dt;
       this.yaw = Math.atan2(Math.sin(this.yaw), Math.cos(this.yaw));
       rig.rotation.y = this.yaw;
+      rig.updateMatrixWorld(true);
+      this.nose.set(0, 0, -1).applyQuaternion(rig.quaternion);
+      this.nose.y = 0;
+      const noseLen = Math.hypot(this.nose.x, this.nose.z);
+      if (noseLen < 1e-6) this.nose.set(0, 0, -1);
+      else { this.nose.x /= noseLen; this.nose.z /= noseLen; }
 
-      // Speed stays on the nose. Turning swings that velocity with the facing.
+      // Speed stays on the visual nose. Turning swings that velocity with the facing.
       this.forwardSpeed *= Math.exp(-FLIGHT.drag * dt);
       this.forwardSpeed += input.forward * FLIGHT.thrust * dt;
       if (this.forwardSpeed < 0) this.forwardSpeed = 0;
-      const noseX = Math.sin(this.yaw);
-      const noseZ = -Math.cos(this.yaw);
+      const noseX = this.nose.x;
+      const noseZ = this.nose.z;
       this.velocity.x = noseX * this.forwardSpeed;
       this.velocity.z = noseZ * this.forwardSpeed;
       if (Math.abs(input.climb) > 0.01) this.velocity.y = input.climb * FLIGHT.vertical;
@@ -742,8 +814,8 @@
           material="color: #1d4ed8; roughness: 0.45"></a-box>
       </a-entity>
 
-      <a-entity oculus-touch-controls="hand: left"></a-entity>
-      <a-entity oculus-touch-controls="hand: right"></a-entity>
+      <a-entity id="left-hand" oculus-touch-controls="hand: left"></a-entity>
+      <a-entity id="right-hand" oculus-touch-controls="hand: right"></a-entity>
     </a-entity>
   </a-scene>
 </body>

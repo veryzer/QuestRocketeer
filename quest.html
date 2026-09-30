@@ -1,0 +1,661 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>Quest Rocketeer</title>
+  <script src="https://aframe.io/releases/1.5.0/aframe.min.js"></script>
+  <style>
+    html, body { margin: 0; height: 100%; background: #07111f; overflow: hidden; font-family: "Segoe UI", Tahoma, sans-serif; }
+    #hud {
+      position: fixed; top: 14px; left: 14px; z-index: 20;
+      display: flex; flex-direction: column; gap: 8px; pointer-events: none;
+    }
+    .badge {
+      background: rgba(8, 15, 30, 0.88);
+      color: #fff; border: 2px solid #38bdf8; border-radius: 999px;
+      padding: 7px 14px; font-weight: 700; font-size: 15px; width: fit-content;
+    }
+    .badge.gold { border-color: #fbbf24; color: #fde68a; }
+    #enter-vr {
+      position: fixed; top: 14px; right: 14px; z-index: 30;
+      background: #7c3aed; color: #fff; border: 0; border-radius: 999px;
+      padding: 12px 18px; font-size: 16px; font-weight: 800; cursor: pointer;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.35);
+    }
+    #enter-vr:hover { background: #6d28d9; }
+    #help {
+      position: fixed; left: 14px; bottom: 14px; z-index: 20; max-width: min(520px, calc(100vw - 220px));
+      background: rgba(8, 15, 30, 0.88); color: #e2e8f0; border: 2px solid #38bdf8;
+      border-radius: 14px; padding: 10px 14px; font-size: 13px; line-height: 1.45; pointer-events: none;
+    }
+    #finish {
+      position: fixed; inset: 0; z-index: 25; display: none;
+      align-items: flex-start; justify-content: center; padding-top: 78px; pointer-events: none;
+    }
+    #finish.show { display: flex; }
+    #finish .card {
+      background: rgba(8, 15, 30, 0.94); border: 3px solid #fbbf24; color: #fff;
+      border-radius: 18px; padding: 16px 28px; text-align: center; min-width: 240px;
+    }
+    #finish .kicker { letter-spacing: 0.08em; font-size: 13px; color: #fde68a; font-weight: 800; }
+    #finish .big { font-size: 32px; font-weight: 800; margin-top: 4px; }
+    .stick {
+      position: fixed; bottom: 18px; z-index: 30; width: 116px; height: 116px;
+      border-radius: 50%; background: rgba(15, 23, 42, 0.55);
+      border: 2px solid rgba(248, 250, 252, 0.7); touch-action: none; user-select: none;
+    }
+    #stick-left { left: 18px; }
+    #stick-right { right: 18px; }
+    .knob {
+      position: absolute; left: 38px; top: 38px; width: 36px; height: 36px; border-radius: 50%;
+      background: #f8fafc; box-shadow: 0 2px 8px rgba(0,0,0,0.35); pointer-events: none;
+    }
+    .stick span {
+      position: absolute; left: 0; right: 0; bottom: -18px; text-align: center;
+      color: #fff; font-size: 11px; font-weight: 700; text-shadow: 0 1px 2px #000; pointer-events: none;
+    }
+    @media (max-width: 720px) {
+      #help { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <div id="hud">
+    <div class="badge gold" id="score">Coins: 0</div>
+    <div class="badge" id="status">On the pad — fly out to start</div>
+  </div>
+  <button id="enter-vr" type="button">Enter VR</button>
+  <div id="help">
+    <b>Quest.</b> Right stick: turn left/right, push forward to fly. Left stick: push forward to descend, pull back to climb.<br>
+    <b>Desktop.</b> A/D turn, W forward, Space climb, Shift descend. On-screen sticks match the controllers: right knob up flies forward, left knob up descends and down climbs.
+  </div>
+  <div id="finish">
+    <div class="card">
+      <div class="kicker">ROUND COMPLETE</div>
+      <div class="big" id="finish-score">0 coins</div>
+    </div>
+  </div>
+  <div id="stick-left" class="stick" aria-label="Altitude stick"><div class="knob"></div><span>ALTITUDE</span></div>
+  <div id="stick-right" class="stick" aria-label="Flight stick"><div class="knob"></div><span>TURN / FLY</span></div>
+
+  <script>
+  const IMG_W = 1928;
+  const IMG_H = 1530;
+  const MAP_W = 100;
+  const SCALE = MAP_W / IMG_W;
+  const MAP_D = IMG_H * SCALE;
+
+  const FLIGHT = {
+    thrust: 20,
+    vertical: 7.2,
+    yawSpeed: 95,
+    drag: 1.85,
+    minY: 1.35,
+    radius: 0.8,
+    bounce: 1.32
+  };
+
+  // Pixel footprints traced from the magenta overlay aligned to school.png.
+  // Heights are rough: halls taller than low rooms. Tallest is the central hall.
+  const BUILDING_PX = [
+    { name: "Central hall", h: 8.8, pts: [[902,782],[782,526],[451,699],[455,778],[568,794],[569,863],[816,864],[819,789]] },
+    { name: "South hall", h: 7.4, pts: [[839,998],[247,1200],[293,1338],[887,1134]] },
+    { name: "North hall", h: 7.0, pts: [[536,279],[463,283],[485,547],[564,544]] },
+    { name: "East block", h: 5.8, pts: [[961,944],[963,1129],[1118,1128],[1116,944]] },
+    { name: "West block", h: 5.8, pts: [[69,947],[69,1169],[183,1169],[185,947]] },
+    { name: "East rooms", h: 5.4, pts: [[1167,918],[1169,1128],[1309,1129],[1307,918],[1263,918],[1261,1019],[1212,1017],[1212,918]] },
+    { name: "Southwest rooms", h: 4.2, pts: [[74,1177],[74,1331],[181,1332],[182,1177]] },
+    { name: "West rooms", h: 4.6, pts: [[401,669],[244,674],[246,775],[405,770]] },
+    { name: "Southeast rooms", h: 4.4, pts: [[1538,1099],[1531,1196],[1670,1205],[1674,1113]] },
+    { name: "Small west", h: 3.4, pts: [[283,930],[192,931],[191,1020],[285,1020]] },
+    { name: "Small west upper", h: 3.4, pts: [[192,840],[192,922],[285,922],[284,840]] },
+    { name: "Low link", h: 3.0, pts: [[571,582],[476,626],[494,666],[588,618]] }
+  ];
+
+  // Street frontage along the bottom of the photo, plus the short returns at the inner ends.
+  const FENCE_PX = [
+    [[5,1409],[575,1416]],
+    [[1350,1413],[1922,1420]],
+    [[586,1244],[581,1416]],
+    [[1349,1165],[1343,1414]]
+  ];
+
+  const COIN_PX = [
+    [665, 430],
+    [170, 345],
+    [250, 1260],
+    [400, 900],
+    [700, 500],
+    [1385, 460],
+    [1455, 1040],
+    [330, 1080],
+    [1520, 680],
+    [1760, 960],
+    [560, 190],
+    [470, 1380]
+  ];
+
+  const PAD_PX = [964, 1288];
+  const PAD_R = 5.0;
+  const COIN_R = 2.35;
+  const FENCE_HALF = 0.32;
+
+  function toWorld(px, py) {
+    return {
+      x: (px - IMG_W / 2) * SCALE,
+      z: (py - IMG_H / 2) * SCALE
+    };
+  }
+
+  const TALLEST = BUILDING_PX.reduce((m, b) => Math.max(m, b.h), 0);
+  FLIGHT.maxY = TALLEST + FLIGHT.radius + 0.22;
+  const FENCE_H = FLIGHT.maxY + 1.5;
+
+  const BUILDINGS = BUILDING_PX.map((b) => ({
+    name: b.name,
+    h: b.h,
+    poly: b.pts.map((p) => toWorld(p[0], p[1]))
+  }));
+  const FENCES = FENCE_PX.map((seg) => seg.map((p) => toWorld(p[0], p[1])));
+  const PAD = toWorld(PAD_PX[0], PAD_PX[1]);
+
+  function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+  function deadzone(v) {
+    const d = 0.12;
+    if (Math.abs(v) < d) return 0;
+    return (v - Math.sign(v) * d) / (1 - d);
+  }
+
+  function pointInPoly(x, z, poly) {
+    let inside = false;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      const xi = poly[i].x, zi = poly[i].z;
+      const xj = poly[j].x, zj = poly[j].z;
+      const hit = ((zi > z) !== (zj > z)) &&
+        (x < (xj - xi) * (z - zi) / ((zj - zi) || 1e-9) + xi);
+      if (hit) inside = !inside;
+    }
+    return inside;
+  }
+
+  function closestOnSeg(px, pz, ax, az, bx, bz) {
+    const abx = bx - ax, abz = bz - az;
+    const len2 = abx * abx + abz * abz || 1e-9;
+    let t = ((px - ax) * abx + (pz - az) * abz) / len2;
+    t = clamp(t, 0, 1);
+    return { x: ax + abx * t, z: az + abz * t };
+  }
+
+  function bounce(vel, nx, nz) {
+    const vn = vel.x * nx + vel.z * nz;
+    if (vn < 0) {
+      vel.x -= FLIGHT.bounce * vn * nx;
+      vel.z -= FLIGHT.bounce * vn * nz;
+    }
+  }
+
+  function collideBuilding(pos, vel, poly, height) {
+    const radius = FLIGHT.radius;
+    const inside = pointInPoly(pos.x, pos.z, poly);
+    let best = Infinity, cx = 0, cz = 0;
+    for (let i = 0; i < poly.length; i++) {
+      const a = poly[i], b = poly[(i + 1) % poly.length];
+      const q = closestOnSeg(pos.x, pos.z, a.x, a.z, b.x, b.z);
+      const d = Math.hypot(pos.x - q.x, pos.z - q.z);
+      if (d < best) { best = d; cx = q.x; cz = q.z; }
+    }
+    if (!inside && best >= radius) return false;
+    if (pos.y - radius >= height) return false;
+
+    const horizPen = inside ? (best + radius) : (radius - best);
+    const vertPen = (height + radius) - pos.y;
+    // Near the top of a wall, step onto the roof so a climb can crest it.
+    if (pos.y >= height - 0.08 && vertPen <= horizPen + 0.3) {
+      pos.y = height + radius;
+      if (vel.y < 0) vel.y = 0;
+      return true;
+    }
+
+    let nx = inside ? (cx - pos.x) : (pos.x - cx);
+    let nz = inside ? (cz - pos.z) : (pos.z - cz);
+    let len = Math.hypot(nx, nz);
+    if (len < 1e-5) { nx = 1; nz = 0; len = 1; }
+    nx /= len; nz /= len;
+    pos.x += nx * (horizPen + 0.03);
+    pos.z += nz * (horizPen + 0.03);
+    bounce(vel, nx, nz);
+    return true;
+  }
+
+  function collideFence(pos, vel, a, b) {
+    if (pos.y > FENCE_H) return false;
+    const radius = FLIGHT.radius + FENCE_HALF;
+    const q = closestOnSeg(pos.x, pos.z, a.x, a.z, b.x, b.z);
+    let nx = pos.x - q.x, nz = pos.z - q.z;
+    let dist = Math.hypot(nx, nz);
+    if (dist >= radius) return false;
+    if (dist < 1e-4) {
+      const sx = b.x - a.x, sz = b.z - a.z;
+      const sl = Math.hypot(sx, sz) || 1;
+      nx = -sz / sl; nz = sx / sl;
+      dist = 0;
+    } else {
+      nx /= dist; nz /= dist;
+    }
+    pos.x += nx * (radius - dist + 0.03);
+    pos.z += nz * (radius - dist + 0.03);
+    bounce(vel, nx, nz);
+    return true;
+  }
+
+  function resolveSolids(pos, vel) {
+    for (let pass = 0; pass < 4; pass++) {
+      let hit = false;
+      for (let i = 0; i < BUILDINGS.length; i++) {
+        if (collideBuilding(pos, vel, BUILDINGS[i].poly, BUILDINGS[i].h)) hit = true;
+      }
+      for (let i = 0; i < FENCES.length; i++) {
+        if (collideFence(pos, vel, FENCES[i][0], FENCES[i][1])) hit = true;
+      }
+      if (pos.y < FLIGHT.minY) { pos.y = FLIGHT.minY; if (vel.y < 0) vel.y = 0; hit = true; }
+      if (pos.y > FLIGHT.maxY) { pos.y = FLIGHT.maxY; if (vel.y > 0) vel.y = 0; hit = true; }
+      if (!hit) break;
+    }
+  }
+
+  AFRAME.registerComponent("school-map", {
+    init: function () {
+      const root = this.el;
+      const ground = document.createElement("a-plane");
+      ground.setAttribute("width", MAP_W);
+      ground.setAttribute("height", MAP_D);
+      ground.setAttribute("rotation", "-90 0 0");
+      ground.setAttribute("material", "src: #school; roughness: 1; metalness: 0");
+      root.appendChild(ground);
+
+      const grass = document.createElement("a-plane");
+      grass.setAttribute("width", 400);
+      grass.setAttribute("height", 400);
+      grass.setAttribute("position", "0 -0.04 0");
+      grass.setAttribute("rotation", "-90 0 0");
+      grass.setAttribute("material", "color: #3f6212; roughness: 1");
+      root.appendChild(grass);
+
+      BUILDINGS.forEach((b) => {
+        this.addWalls(root, b);
+        this.addRoof(root, b);
+      });
+      FENCES.forEach((seg) => this.addFence(root, seg[0], seg[1]));
+      this.addPad(root);
+      this.addCoins(root);
+    },
+
+    addWalls: function (root, building) {
+      const poly = building.poly;
+      for (let i = 0; i < poly.length; i++) {
+        const a = poly[i], b = poly[(i + 1) % poly.length];
+        const dx = b.x - a.x, dz = b.z - a.z;
+        const len = Math.hypot(dx, dz);
+        if (len < 0.05) continue;
+        const yaw = THREE.MathUtils.radToDeg(Math.atan2(-dz, dx));
+        const wall = document.createElement("a-box");
+        wall.setAttribute("class", "building-wall");
+        wall.setAttribute("width", len);
+        wall.setAttribute("height", building.h);
+        wall.setAttribute("depth", 0.18);
+        wall.setAttribute("position", `${(a.x + b.x) / 2} ${building.h / 2} ${(a.z + b.z) / 2}`);
+        wall.setAttribute("rotation", `0 ${yaw} 0`);
+        const repeatX = Math.max(1, len / 1.7).toFixed(2);
+        const repeatY = Math.max(1, building.h / 1.15).toFixed(2);
+        wall.setAttribute("material", `src: #brick; repeat: ${repeatX} ${repeatY}; roughness: 0.92; metalness: 0`);
+        root.appendChild(wall);
+      }
+    },
+
+    addRoof: function (root, building) {
+      const poly = building.poly.slice();
+      let area = 0;
+      for (let i = 0; i < poly.length; i++) {
+        const p = poly[i], q = poly[(i + 1) % poly.length];
+        area += p.x * (-q.z) - q.x * (-p.z);
+      }
+      if (area < 0) poly.reverse();
+      const shape = new THREE.Shape();
+      shape.moveTo(poly[0].x, -poly[0].z);
+      for (let i = 1; i < poly.length; i++) shape.lineTo(poly[i].x, -poly[i].z);
+      const geo = new THREE.ShapeGeometry(shape);
+      geo.rotateX(-Math.PI / 2);
+      geo.translate(0, building.h + 0.02, 0);
+      const mat = new THREE.MeshStandardMaterial({
+        color: 0x8b919a, roughness: 0.95, metalness: 0.02, side: THREE.DoubleSide
+      });
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.name = building.name;
+      root.object3D.add(mesh);
+    },
+
+    addFence: function (root, a, b) {
+      const dx = b.x - a.x, dz = b.z - a.z;
+      const len = Math.hypot(dx, dz);
+      const yaw = THREE.MathUtils.radToDeg(Math.atan2(-dz, dx));
+      const mid = `${(a.x + b.x) / 2} ${FENCE_H / 2} ${(a.z + b.z) / 2}`;
+      const wall = document.createElement("a-box");
+      wall.setAttribute("width", len);
+      wall.setAttribute("height", FENCE_H);
+      wall.setAttribute("depth", 0.12);
+      wall.setAttribute("position", mid);
+      wall.setAttribute("rotation", `0 ${yaw} 0`);
+      wall.setAttribute("material", "color: #ff4f9a; opacity: 0.13; transparent: true; side: double; depthWrite: false");
+      root.appendChild(wall);
+
+      const rim = document.createElement("a-box");
+      rim.setAttribute("width", len);
+      rim.setAttribute("height", 0.16);
+      rim.setAttribute("depth", 0.16);
+      rim.setAttribute("position", `${(a.x + b.x) / 2} 1.7 ${(a.z + b.z) / 2}`);
+      rim.setAttribute("rotation", `0 ${yaw} 0`);
+      rim.setAttribute("material", "color: #fb7185; opacity: 0.72; transparent: true; emissive: #fb7185; emissiveIntensity: 0.35; side: double");
+      root.appendChild(rim);
+    },
+
+    addPad: function (root) {
+      const pad = document.createElement("a-entity");
+      pad.setAttribute("position", `${PAD.x} 0.03 ${PAD.z}`);
+      pad.innerHTML = `
+        <a-ring radius-inner="${(PAD_R - 0.55).toFixed(2)}" radius-outer="${PAD_R.toFixed(2)}"
+          rotation="-90 0 0"
+          material="color: #fbbf24; emissive: #f59e0b; emissiveIntensity: 0.55; side: double"></a-ring>
+        <a-circle radius="${(PAD_R - 0.7).toFixed(2)}" rotation="-90 0 0"
+          material="color: #22d3ee; opacity: 0.38; transparent: true; side: double"></a-circle>
+        <a-cylinder radius="${PAD_R.toFixed(2)}" height="5.5" open-ended="true" position="0 2.75 0"
+          material="color: #67e8f9; opacity: 0.22; transparent: true; side: double"></a-cylinder>
+        <a-text value="START / FINISH" align="center" position="0 2.4 -1.2" rotation="-18 0 0"
+          width="8" color="#ffffff"></a-text>
+      `;
+      root.appendChild(pad);
+    },
+
+    addCoins: function (root) {
+      const holder = document.createElement("a-entity");
+      holder.setAttribute("id", "coins");
+      COIN_PX.forEach((p, i) => {
+        const w = toWorld(p[0], p[1]);
+        const coin = document.createElement("a-entity");
+        coin.setAttribute("class", "coin");
+        coin.setAttribute("position", `${w.x} 1.85 ${w.z}`);
+        coin.dataset.taken = "false";
+        coin.dataset.x = w.x;
+        coin.dataset.y = "1.85";
+        coin.dataset.z = w.z;
+        coin.setAttribute("animation", "property: rotation; to: 0 360 0; loop: true; dur: 2400; easing: linear");
+        coin.innerHTML = `
+          <a-cylinder radius="0.72" height="0.14" rotation="90 0 0"
+            material="color: #fbbf24; metalness: 0.65; roughness: 0.28; emissive: #d97706; emissiveIntensity: 0.35"></a-cylinder>
+          <a-ring radius-inner="0.28" radius-outer="0.48" rotation="90 0 0"
+            material="color: #fef3c7; emissive: #fde68a; emissiveIntensity: 0.4; side: double"></a-ring>
+        `;
+        coin.dataset.index = String(i);
+        holder.appendChild(coin);
+      });
+      root.appendChild(holder);
+    }
+  });
+
+  AFRAME.registerComponent("flight-controls", {
+    init: function () {
+      this.velocity = new THREE.Vector3();
+      this.yaw = 0;
+      this.state = "ready";
+      this.score = 0;
+      this.cameraEl = this.el.querySelector("[camera]");
+      this.keys = { forward: false, left: false, right: false, climb: false, descend: false };
+      this.screen = { rx: 0, ry: 0, lx: 0, ly: 0, right: false, left: false };
+      this.view = new THREE.Vector3();
+      this.headLocal = new THREE.Vector3();
+      this._offset = new THREE.Vector3();
+
+      const startY = FLIGHT.minY;
+      this.el.object3D.position.set(PAD.x, startY, PAD.z);
+      this.el.object3D.rotation.y = 0;
+
+      window.addEventListener("keydown", (e) => this.onKey(e, true));
+      window.addEventListener("keyup", (e) => this.onKey(e, false));
+      this.bindStick(document.getElementById("stick-right"), "right");
+      this.bindStick(document.getElementById("stick-left"), "left");
+
+      const scene = this.el.sceneEl;
+      const enter = document.getElementById("enter-vr");
+      enter.addEventListener("click", () => scene.enterVR());
+
+      this.scoreEl = document.getElementById("score");
+      this.statusEl = document.getElementById("status");
+      this.finishEl = document.getElementById("finish");
+      this.finishScoreEl = document.getElementById("finish-score");
+
+      this.lastPos = { x: PAD.x, y: startY, z: PAD.z };
+      window.QUEST = {
+        get: () => ({
+          x: this.lastPos.x, y: this.lastPos.y, z: this.lastPos.z, yaw: this.yaw,
+          score: this.score, state: this.state, keys: { ...this.keys },
+          maxY: FLIGHT.maxY, minY: FLIGHT.minY,
+          coins: COIN_PX.length
+        })
+      };
+    },
+
+    onKey: function (e, down) {
+      const map = {
+        KeyW: "forward", ArrowUp: "forward",
+        KeyA: "left", ArrowLeft: "left",
+        KeyD: "right", ArrowRight: "right",
+        Space: "climb",
+        ShiftLeft: "descend", ShiftRight: "descend", KeyC: "descend"
+      };
+      const slot = map[e.code];
+      if (!slot) return;
+      this.keys[slot] = down;
+      if (["Space", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.code)) e.preventDefault();
+    },
+
+    bindStick: function (el, which) {
+      const knob = el.querySelector(".knob");
+      const apply = (clientX, clientY) => {
+        const r = el.getBoundingClientRect();
+        let x = (clientX - (r.left + r.width / 2)) / (r.width * 0.36);
+        let y = (clientY - (r.top + r.height / 2)) / (r.height * 0.36);
+        const m = Math.hypot(x, y);
+        if (m > 1) { x /= m; y /= m; }
+        knob.style.transform = `translate(${x * 34}px, ${y * 34}px)`;
+        if (which === "right") { this.screen.rx = x; this.screen.ry = y; this.screen.right = true; }
+        else { this.screen.lx = x; this.screen.ly = y; this.screen.left = true; }
+      };
+      const end = () => {
+        knob.style.transform = "translate(0px, 0px)";
+        if (which === "right") { this.screen.rx = 0; this.screen.ry = 0; this.screen.right = false; }
+        else { this.screen.lx = 0; this.screen.ly = 0; this.screen.left = false; }
+      };
+      el.addEventListener("pointerdown", (e) => { el.setPointerCapture(e.pointerId); apply(e.clientX, e.clientY); });
+      el.addEventListener("pointermove", (e) => { if (e.buttons) apply(e.clientX, e.clientY); });
+      el.addEventListener("pointerup", end);
+      el.addEventListener("pointercancel", end);
+    },
+
+    readInput: function () {
+      let rx = 0, ry = 0, lx = 0, ly = 0;
+      const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+      for (let i = 0; i < pads.length; i++) {
+        const gp = pads[i];
+        if (!gp || !gp.connected) continue;
+        if (gp.hand !== "left" && gp.hand !== "right") continue;
+        const x = gp.axes.length >= 4 ? gp.axes[2] : gp.axes[0];
+        const y = gp.axes.length >= 4 ? gp.axes[3] : gp.axes[1];
+        if (gp.hand === "right") { rx += x; ry += y; }
+        else { lx += x; ly += y; }
+      }
+      if (this.screen.right) { rx += this.screen.rx; ry += this.screen.ry; }
+      if (this.screen.left) { lx += this.screen.lx; ly += this.screen.ly; }
+
+      // Right stick: +x turns right, push forward (negative y) flies forward.
+      // Left stick: push forward descends, pull back climbs. Screen y is +down,
+      // which matches the gamepad (negative = pushed forward).
+      let turn = deadzone(rx);
+      let forward = Math.max(0, -deadzone(ry));
+      let climb = deadzone(ly);
+      if (this.keys.left) turn -= 1;
+      if (this.keys.right) turn += 1;
+      if (this.keys.forward) forward = 1;
+      if (this.keys.climb) climb += 1;
+      if (this.keys.descend) climb -= 1;
+      return {
+        turn: clamp(turn, -1, 1),
+        forward: clamp(forward, 0, 1),
+        climb: clamp(climb, -1, 1)
+      };
+    },
+
+    viewpoint: function () {
+      const rig = this.el.object3D;
+      const cam = this.cameraEl.object3D;
+      rig.updateMatrixWorld(true);
+      cam.getWorldPosition(this.view);
+      this.headLocal.copy(this.view);
+      rig.worldToLocal(this.headLocal);
+      return this.view;
+    },
+
+    writeViewpoint: function (world) {
+      const rig = this.el.object3D;
+      this._offset.copy(this.headLocal);
+      this._offset.applyQuaternion(rig.quaternion);
+      rig.position.set(
+        world.x - this._offset.x,
+        world.y - this._offset.y,
+        world.z - this._offset.z
+      );
+    },
+
+    setScore: function (n) {
+      this.score = n;
+      this.scoreEl.textContent = `Coins: ${n}`;
+    },
+
+    setStatus: function (text) {
+      this.statusEl.textContent = text;
+    },
+
+    finishRound: function () {
+      this.state = "done";
+      const line = `${this.score} coin${this.score === 1 ? "" : "s"}`;
+      this.setStatus("Round complete");
+      this.finishScoreEl.textContent = line;
+      this.finishEl.classList.add("show");
+    },
+
+    collectCoins: function (pos) {
+      const coins = document.querySelectorAll(".coin");
+      coins.forEach((el) => {
+        if (el.dataset.taken === "true") return;
+        const dx = pos.x - parseFloat(el.dataset.x);
+        const dy = pos.y - parseFloat(el.dataset.y);
+        const dz = pos.z - parseFloat(el.dataset.z);
+        if (Math.hypot(dx, dy, dz) <= COIN_R) {
+          el.dataset.taken = "true";
+          el.setAttribute("visible", "false");
+          this.setScore(this.score + 1);
+        }
+      });
+    },
+
+    tick: function (time, delta) {
+      const dt = Math.min((delta || 16.7) / 1000, 0.05);
+      if (!this.cameraEl) return;
+      const input = this.readInput();
+      const rig = this.el.object3D;
+
+      this.yaw += input.turn * THREE.MathUtils.degToRad(FLIGHT.yawSpeed) * dt;
+      this.yaw = Math.atan2(Math.sin(this.yaw), Math.cos(this.yaw));
+      rig.rotation.y = this.yaw;
+
+      const speed = Math.exp(-FLIGHT.drag * dt);
+      this.velocity.x *= speed;
+      this.velocity.z *= speed;
+      this.velocity.x += Math.sin(this.yaw) * input.forward * FLIGHT.thrust * dt;
+      this.velocity.z += -Math.cos(this.yaw) * input.forward * FLIGHT.thrust * dt;
+      if (Math.abs(input.climb) > 0.01) this.velocity.y = input.climb * FLIGHT.vertical;
+      else this.velocity.y *= Math.exp(-8 * dt);
+
+      const ship = document.getElementById("ship");
+      if (ship) {
+        const roll = -input.turn * 0.22;
+        ship.object3D.rotation.z = THREE.MathUtils.lerp(ship.object3D.rotation.z, roll, 0.15);
+        ship.object3D.rotation.x = THREE.MathUtils.lerp(ship.object3D.rotation.x, -input.climb * 0.08, 0.1);
+      }
+
+      this.viewpoint();
+      const pos = { x: this.view.x, y: this.view.y, z: this.view.z };
+      const steps = Math.max(1, Math.ceil(Math.hypot(this.velocity.x, this.velocity.z) * dt / 0.35));
+      const h = dt / steps;
+      for (let s = 0; s < steps; s++) {
+        pos.x += this.velocity.x * h;
+        pos.y += this.velocity.y * h;
+        pos.z += this.velocity.z * h;
+        resolveSolids(pos, this.velocity);
+      }
+      this.writeViewpoint(pos);
+      this.lastPos = { x: pos.x, y: pos.y, z: pos.z };
+      this.collectCoins(pos);
+
+      const dist = Math.hypot(pos.x - PAD.x, pos.z - PAD.z);
+      if (this.state === "ready" && dist > PAD_R) {
+        this.state = "flying";
+        this.setStatus("Round in progress");
+      } else if (this.state === "flying" && dist < PAD_R && pos.y < 3.4) {
+        this.finishRound();
+      }
+    }
+  });
+  </script>
+
+  <a-scene school-map renderer="antialias: true; colorManagement: true" vr-mode-ui="enabled: true">
+    <a-assets>
+      <img id="school" src="quest/school.jpg" crossorigin="anonymous">
+      <img id="brick" src="quest/brick.jpg" crossorigin="anonymous">
+    </a-assets>
+
+    <a-sky color="#7dd3fc"></a-sky>
+    <a-light type="ambient" color="#ffffff" intensity="0.72"></a-light>
+    <a-light type="directional" position="28 48 18" intensity="0.95" color="#fff7ed"></a-light>
+
+    <a-entity id="player" flight-controls>
+      <a-camera id="view" position="0 0.08 0.15" rotation="-18 0 0"
+        wasd-controls="enabled: false"
+        look-controls="enabled: false"
+        camera="near: 0.03; far: 500; fov: 78">
+      </a-camera>
+
+      <a-entity id="ship">
+        <a-cylinder class="body" radius="0.36" height="1.55" position="0 -0.52 0.35" rotation="90 0 0"
+          material="color: #dc2626; roughness: 0.42"></a-cylinder>
+        <a-cone class="nose" radius-bottom="0.36" radius-top="0.02" height="1.05" position="0 -0.42 -1.05" rotation="-90 0 0"
+          material="color: #ef4444; roughness: 0.4"></a-cone>
+        <a-sphere class="window" radius="0.16" position="0 -0.18 -0.78"
+          material="color: #1d4ed8; metalness: 0.4; roughness: 0.16; emissive: #1e3a8a; emissiveIntensity: 0.45"></a-sphere>
+        <a-box class="fin" width="0.85" height="0.07" depth="0.7" position="-0.62 -0.32 0.15" rotation="12 22 38"
+          material="color: #2563eb; roughness: 0.45"></a-box>
+        <a-box class="fin" width="0.85" height="0.07" depth="0.7" position="0.62 -0.32 0.15" rotation="12 -22 -38"
+          material="color: #2563eb; roughness: 0.45"></a-box>
+        <a-box class="fin" width="0.08" height="0.7" depth="0.62" position="0 -0.78 0.2"
+          material="color: #1d4ed8; roughness: 0.45"></a-box>
+        <a-box width="0.05" height="0.55" depth="0.05" position="-0.34 -0.12 -0.35"
+          material="color: #b91c1c; roughness: 0.5"></a-box>
+        <a-box width="0.05" height="0.55" depth="0.05" position="0.34 -0.12 -0.35"
+          material="color: #b91c1c; roughness: 0.5"></a-box>
+      </a-entity>
+
+      <a-entity oculus-touch-controls="hand: left"></a-entity>
+      <a-entity oculus-touch-controls="hand: right"></a-entity>
+    </a-entity>
+  </a-scene>
+</body>
+</html>

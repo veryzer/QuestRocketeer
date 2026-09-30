@@ -442,6 +442,143 @@
     }
   });
 
+  // Head-locked layers draw over walls and the ship so the pilot can always read them.
+  AFRAME.registerComponent("hud-layer", {
+    schema: { order: { default: 900 } },
+    tick: function () {
+      const order = this.data.order;
+      this.el.object3D.traverse((o) => {
+        o.renderOrder = order;
+        if (o.material && o.material.depthTest !== false) {
+          o.material.depthTest = false;
+          o.material.depthWrite = false;
+          o.material.needsUpdate = true;
+        }
+      });
+    }
+  });
+
+  const FX_COLORS = [0xfbbf24, 0xf43f5e, 0x22d3ee, 0xa3e635, 0xc084fc, 0xfb923c, 0xffffff, 0x38bdf8];
+
+  AFRAME.registerComponent("celebration-fx", {
+    schema: { duration: { default: 9 }, nx: { default: 0 }, nz: { default: -1 } },
+    init: function () {
+      this.max = 1600;
+      this.pos = new Float32Array(this.max * 3);
+      this.col = new Float32Array(this.max * 3);
+      this.vel = new Float32Array(this.max * 3);
+      this.life = new Float32Array(this.max);
+      this.next = 0;
+      this.age = 0;
+      this.nextBurst = 0;
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute("position", new THREE.BufferAttribute(this.pos, 3));
+      geo.setAttribute("color", new THREE.BufferAttribute(this.col, 3));
+      const spark = document.createElement("canvas");
+      spark.width = spark.height = 64;
+      const g = spark.getContext("2d");
+      const grad = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+      grad.addColorStop(0, "rgba(255,255,255,1)");
+      grad.addColorStop(0.5, "rgba(255,255,255,0.9)");
+      grad.addColorStop(1, "rgba(255,255,255,0)");
+      g.fillStyle = grad;
+      g.fillRect(0, 0, 64, 64);
+      const mat = new THREE.PointsMaterial({
+        size: 0.3, map: new THREE.CanvasTexture(spark), alphaTest: 0.05,
+        vertexColors: true, transparent: true, depthWrite: false,
+        sizeAttenuation: true
+      });
+      this.points = new THREE.Points(geo, mat);
+      this.points.frustumCulled = false;
+      this.el.object3D.add(this.points);
+      for (let i = 0; i < this.max; i++) this.pos[i * 3 + 1] = -999;
+
+      this.rings = [];
+      for (let i = 0; i < 3; i++) {
+        const ring = new THREE.Mesh(
+          new THREE.RingGeometry(0.8, 1.15, 48),
+          new THREE.MeshBasicMaterial({ color: FX_COLORS[i], transparent: true, side: THREE.DoubleSide, depthWrite: false })
+        );
+        ring.rotation.x = -Math.PI / 2;
+        ring.position.y = 0.4 + i * 1.2;
+        ring.userData.delay = i * 0.35;
+        this.el.object3D.add(ring);
+        this.rings.push(ring);
+      }
+
+      this.burst(0, 1.5, 0, 260, 7);
+      this.confetti(180);
+    },
+
+    spawn: function (x, y, z, vx, vy, vz, color, life) {
+      const i = this.next;
+      this.next = (this.next + 1) % this.max;
+      const c = new THREE.Color(color);
+      this.pos[i * 3] = x; this.pos[i * 3 + 1] = y; this.pos[i * 3 + 2] = z;
+      this.vel[i * 3] = vx; this.vel[i * 3 + 1] = vy; this.vel[i * 3 + 2] = vz;
+      this.col[i * 3] = c.r; this.col[i * 3 + 1] = c.g; this.col[i * 3 + 2] = c.b;
+      this.life[i] = life;
+      this.colorsDirty = true;
+    },
+
+    burst: function (x, y, z, count, speed) {
+      const color = FX_COLORS[Math.floor(Math.random() * FX_COLORS.length)];
+      const alt = FX_COLORS[Math.floor(Math.random() * FX_COLORS.length)];
+      for (let n = 0; n < count; n++) {
+        const u = Math.random() * 2 - 1;
+        const a = Math.random() * Math.PI * 2;
+        const r = Math.sqrt(1 - u * u);
+        const s = speed * (0.75 + Math.random() * 0.35);
+        this.spawn(x, y, z, r * Math.cos(a) * s, u * s, r * Math.sin(a) * s, n % 3 ? color : alt, 1.4 + Math.random() * 0.8);
+      }
+    },
+
+    confetti: function (count) {
+      for (let n = 0; n < count; n++) {
+        const a = Math.random() * Math.PI * 2;
+        const d = 1.8 + Math.random() * 3;
+        this.spawn(Math.cos(a) * d, 4 + Math.random() * 3, Math.sin(a) * d,
+          (Math.random() - 0.5) * 1.2, Math.random() * 1.5, (Math.random() - 0.5) * 1.2,
+          FX_COLORS[n % FX_COLORS.length], 3 + Math.random() * 2);
+      }
+    },
+
+    tick: function (time, delta) {
+      const dt = Math.min((delta || 16.7) / 1000, 0.05);
+      this.age += dt;
+      if (this.age < this.data.duration && this.age >= this.nextBurst) {
+        this.nextBurst = this.age + 0.28 + Math.random() * 0.3;
+        const ahead = Math.atan2(this.data.nz, this.data.nx);
+        const a = Math.random() < 0.7 ? ahead + (Math.random() - 0.5) * 1.5 : Math.random() * Math.PI * 2;
+        const d = 4.5 + Math.random() * 5;
+        this.burst(Math.cos(a) * d, 3 + Math.random() * 4, Math.sin(a) * d, 150, 4 + Math.random() * 2.5);
+        if (Math.random() < 0.35) this.confetti(40);
+      }
+      for (let i = 0; i < this.max; i++) {
+        if (this.life[i] <= 0) continue;
+        this.life[i] -= dt;
+        const k = i * 3;
+        if (this.life[i] <= 0) { this.pos[k + 1] = -999; continue; }
+        this.vel[k] *= Math.exp(-1.2 * dt);
+        this.vel[k + 2] *= Math.exp(-1.2 * dt);
+        this.vel[k + 1] = this.vel[k + 1] * Math.exp(-1.2 * dt) - 3.2 * dt;
+        this.pos[k] += this.vel[k] * dt;
+        this.pos[k + 1] += this.vel[k + 1] * dt;
+        this.pos[k + 2] += this.vel[k + 2] * dt;
+      }
+      const geo = this.points.geometry;
+      geo.attributes.position.needsUpdate = true;
+      if (this.colorsDirty) { geo.attributes.color.needsUpdate = true; this.colorsDirty = false; }
+      this.rings.forEach((ring) => {
+        const t = ((this.age - ring.userData.delay) % 1.6 + 1.6) % 1.6;
+        const s = 1 + t * 5;
+        ring.scale.set(s, s, s);
+        ring.material.opacity = this.age < this.data.duration ? Math.max(0, 1 - t / 1.6) : 0;
+      });
+      if (this.age > this.data.duration + 3) this.el.parentNode && this.el.parentNode.removeChild(this.el);
+    }
+  });
+
   AFRAME.registerComponent("flight-controls", {
     init: function () {
       this.velocity = new THREE.Vector3();
@@ -490,7 +627,12 @@
       this.finishEl = document.getElementById("finish");
       this.finishTimeEl = document.getElementById("finish-time");
       this.finishBoardEl = document.getElementById("finish-board");
+      this.vrCoinsEl = document.getElementById("vr-coins");
+      this.vrTimeEl = document.getElementById("vr-time");
+      this.vrStatusEl = document.getElementById("vr-status");
+      this.vrText = {};
       this.setScore(0);
+      this.setStatus(this.statusEl.textContent);
       this.updateTimer();
 
       this.lastPos = { x: PAD.x, y: startY, z: PAD.z };
@@ -649,13 +791,22 @@
       );
     },
 
+    // a-text rebuilds its geometry on every value change, so only push real changes.
+    setVRText: function (el, value) {
+      if (!el || this.vrText[el.id] === value) return;
+      this.vrText[el.id] = value;
+      el.setAttribute("value", value);
+    },
+
     setScore: function (n) {
       this.score = n;
       this.scoreEl.textContent = `Coins: ${n} / ${this.totalCoins}`;
+      this.setVRText(this.vrCoinsEl, `COINS ${n} / ${this.totalCoins}`);
     },
 
     setStatus: function (text) {
       this.statusEl.textContent = text;
+      this.setVRText(this.vrStatusEl, text.replace(/\u2014/g, "-"));
     },
 
     displayedSeconds: function () {
@@ -665,7 +816,31 @@
     },
 
     updateTimer: function () {
-      if (this.timerEl) this.timerEl.textContent = `Time: ${formatTime(this.displayedSeconds())}`;
+      const t = formatTime(this.displayedSeconds());
+      if (this.timerEl) this.timerEl.textContent = `Time: ${t}`;
+      this.setVRText(this.vrTimeEl, `TIME ${t}`);
+    },
+
+    celebrate: function (rank) {
+      const scene = this.el.sceneEl;
+      const fx = document.createElement("a-entity");
+      fx.setAttribute("id", "celebration-fx");
+      fx.setAttribute("position", `${this.lastPos.x} ${Math.max(0, this.lastPos.y - 1.2)} ${this.lastPos.z}`);
+      fx.setAttribute("celebration-fx", { nx: this.nose.x, nz: this.nose.z });
+      scene.appendChild(fx);
+
+      const banner = document.getElementById("vr-banner");
+      const rankText = rank === 1 ? "NEW BEST TIME!" : (rank > 0 ? `#${rank} OF YOUR 10 FASTEST` : "ROUND COMPLETE");
+      document.getElementById("vr-banner-time").setAttribute("value", `${formatTime(this.elapsed)}  -  ALL ${this.totalCoins} COINS`);
+      document.getElementById("vr-banner-rank").setAttribute("value", rankText);
+      banner.setAttribute("visible", "true");
+      banner.removeAttribute("animation__pop");
+      banner.setAttribute("animation__pop", "property: scale; from: 0.15 0.15 0.15; to: 1 1 1; dur: 900; easing: easeOutElastic");
+      clearTimeout(this.bannerTimer);
+      this.bannerTimer = setTimeout(() => {
+        banner.setAttribute("animation__pop", "property: scale; from: 1 1 1; to: 0.001 0.001 0.001; dur: 500; easing: easeInBack");
+        setTimeout(() => banner.setAttribute("visible", "false"), 520);
+      }, 9000);
     },
 
     renderBoard: function (times) {
@@ -685,11 +860,12 @@
       times.sort((a, b) => a - b);
       const top = times.slice(0, 10);
       saveTimes(top);
-      this.setStatus("Round complete");
+      this.setStatus(`FINISHED in ${formatTime(this.elapsed)}`);
       this.finishTimeEl.textContent = formatTime(this.elapsed);
       this.renderBoard(top);
       this.finishEl.classList.add("show");
       this.updateTimer();
+      this.celebrate(top.indexOf(this.elapsed) + 1);
     },
 
     collectCoins: function (pos) {
@@ -797,6 +973,29 @@
         wasd-controls="enabled: false"
         look-controls="enabled: false"
         camera="near: 0.03; far: 500; fov: 78">
+        <a-entity id="vr-hud" hud-layer="order: 900" position="0 -0.3 -1" rotation="14 0 0">
+          <a-plane width="0.74" height="0.2" material="color: #081020; opacity: 0.82; transparent: true; shader: flat"></a-plane>
+          <a-plane width="0.76" height="0.012" position="0 0.1 0.001" material="color: #38bdf8; shader: flat"></a-plane>
+          <a-text id="vr-coins" value="COINS 0 / 12" font="exo2bold" color="#fde68a"
+            align="left" anchor="left" width="0.66" wrap-count="22" position="-0.34 0.035 0.002"></a-text>
+          <a-text id="vr-time" value="TIME 0:00.0" font="exo2bold" color="#ffffff"
+            align="right" anchor="right" width="0.66" wrap-count="22" position="0.34 0.035 0.002"></a-text>
+          <a-text id="vr-status" value="On the pad" font="exo2bold" color="#7dd3fc"
+            align="center" width="0.66" wrap-count="38" position="0 -0.05 0.002"></a-text>
+        </a-entity>
+        <a-entity id="vr-banner" hud-layer="order: 950" visible="false" position="0 0.2 -2.3" scale="0.001 0.001 0.001">
+          <a-plane width="2.9" height="1.35" material="color: #0b1024; opacity: 0.88; transparent: true; shader: flat"></a-plane>
+          <a-plane width="2.98" height="0.05" position="0 0.66 0.001" material="color: #fbbf24; shader: flat"></a-plane>
+          <a-plane width="2.98" height="0.05" position="0 -0.66 0.001" material="color: #f43f5e; shader: flat"></a-plane>
+          <a-text value="YOU DID IT!" font="exo2bold" color="#fbbf24" align="center"
+            width="2.6" wrap-count="11" position="0 0.3 0.002"></a-text>
+          <a-text value="SUCCESSFULLY FINISHED" font="exo2bold" color="#ffffff" align="center"
+            width="2.6" wrap-count="24" position="0 -0.08 0.002"></a-text>
+          <a-text id="vr-banner-time" value="0:00.0" font="exo2bold" color="#7dd3fc" align="center"
+            width="2.6" wrap-count="30" position="0 -0.34 0.002"></a-text>
+          <a-text id="vr-banner-rank" value="" font="exo2bold" color="#a3e635" align="center"
+            width="2.6" wrap-count="30" position="0 -0.52 0.002"></a-text>
+        </a-entity>
       </a-camera>
 
       <a-entity id="ship">

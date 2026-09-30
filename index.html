@@ -329,6 +329,10 @@
       };
 
       this.rig = this.el;
+      // Viewpoint can drift from the rig: <a-camera> enables wasd-controls,
+      // which moves the camera (and the cockpit) independently of the rig.
+      this.cameraEl = this.el.querySelector('#headCamera');
+      this._camWorld = new THREE.Vector3();
 
       window.addEventListener('keydown', (e) => {
         initAudio();
@@ -426,20 +430,36 @@
       });
     },
 
+    // Position the player is actually flying. Falls back to the rig if the
+    // camera is not ready. Rig position is also returned so pickups still
+    // register when the viewpoint and the rig overlap.
+    getPlayerSamplePoints: function (rigPos) {
+      const points = [rigPos];
+      const cameraEl = this.cameraEl || this.el.querySelector('#headCamera');
+      if (cameraEl && cameraEl.object3D) {
+        this.cameraEl = cameraEl;
+        cameraEl.object3D.updateMatrixWorld();
+        cameraEl.object3D.getWorldPosition(this._camWorld);
+        points.push(this._camWorld);
+      }
+      return points;
+    },
+
     checkOverlaps: function (pos) {
       const gm = document.querySelector('a-scene').components['game-manager'];
       if (!gm) return;
 
-      // 1. Coin pickups
+      const samplePoints = this.getPlayerSamplePoints(pos);
+
+      // 1. Coin pickups — test the camera (what runs into the coin) and the rig
       const coins = document.querySelectorAll('.coin-entity');
       coins.forEach(el => {
         if (el.dataset.collected === "false") {
           const cx = parseFloat(el.dataset.posX);
           const cy = parseFloat(el.dataset.posY);
           const cz = parseFloat(el.dataset.posZ);
-          const dist = Math.hypot(pos.x - cx, pos.y - cy, pos.z - cz);
-
-          if (dist < 2.5) {
+          const hit = samplePoints.some(p => Math.hypot(p.x - cx, p.y - cy, p.z - cz) < 2.5);
+          if (hit) {
             gm.collectCoin(el);
           }
         }
@@ -447,8 +467,10 @@
 
       // 2. Base return trigger
       if (gm.collectedCount >= gm.totalCoins) {
-        const distToBase = Math.hypot(pos.x - HOME_BASE.x, pos.z - HOME_BASE.z);
-        if (distToBase < HOME_BASE.radius && pos.y < 5.0) {
+        const atBase = samplePoints.some(p => {
+          return Math.hypot(p.x - HOME_BASE.x, p.z - HOME_BASE.z) < HOME_BASE.radius && p.y < 5.0;
+        });
+        if (atBase) {
           gm.checkVictory();
         }
       }

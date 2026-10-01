@@ -105,17 +105,19 @@
 
   // Pixel footprints traced from the magenta overlay aligned to school.png.
   // Heights are rough: halls taller than low rooms. Tallest is the central hall.
-  // The shelter (easternmost) has no walls: a blue roof on four corner poles.
+  // Shelters have no walls: a blue roof on four corner poles.
+  // Fenced buildings are open-topped chain-link enclosures; the rest get gray gable roofs.
   const BUILDING_PX = [
     { name: "Central hall", h: 4.4, pts: [[902,782],[782,526],[451,699],[455,778],[568,794],[569,863],[816,864],[819,789]] },
     { name: "South hall", h: 3.7, pts: [[839,998],[247,1200],[293,1338],[887,1134]] },
     { name: "North hall", h: 3.5, pts: [[536,279],[463,283],[485,547],[564,544]] },
     { name: "East block", h: 2.9, pts: [[961,944],[963,1129],[1118,1128],[1116,944]] },
     { name: "West block", h: 2.9, pts: [[69,947],[69,1169],[183,1169],[185,947]] },
-    { name: "East rooms", h: 2.7, pts: [[1167,918],[1169,1128],[1309,1129],[1307,918],[1263,918],[1261,1019],[1212,1017],[1212,918]] },
+    { name: "East rooms", h: 2.7, fenced: true, pts: [[1167,918],[1169,1128],[1309,1129],[1307,918],[1263,918],[1261,1019],[1212,1017],[1212,918]] },
     { name: "Southwest rooms", h: 2.1, pts: [[74,1177],[74,1331],[181,1332],[182,1177]] },
     { name: "West rooms", h: 2.3, pts: [[401,669],[244,674],[246,775],[405,770]] },
     { name: "Southeast shelter", h: 2.2, shelter: true, pts: [[1538,1099],[1531,1196],[1670,1205],[1674,1113]] },
+    { name: "North shelter", h: 2.2, shelter: true, pts: [[618,269],[611,366],[750,375],[754,283]] },
     { name: "Small west", h: 1.7, pts: [[283,930],[192,931],[191,1020],[285,1020]] },
     { name: "Small west upper", h: 1.7, pts: [[192,840],[192,922],[285,922],[284,840]] },
     { name: "Low link", h: 1.5, pts: [[571,582],[476,626],[494,666],[588,618]] }
@@ -125,6 +127,7 @@
   const FENCE_PX = [
     [[5,1409],[575,1416]],
     [[1350,1413],[1922,1420]],
+    [[955,1160],[1349,1165]],
     [[586,1244],[581,1416]],
     [[1349,1165],[1343,1414]]
   ];
@@ -151,6 +154,7 @@
   const ROOF_T = 0.12;
   const ROOF_UNDER = 0.3;
   const POLE_R = 0.14;
+  const LINK_HALF = 0.08;
   const HEAD_STEER = { deadzone: 0.07, smooth: 10, ease: 2.2 };
   const TIMES_KEY = "quest-rocketeer-times";
   const HALF_W = MAP_W / 2;
@@ -163,16 +167,55 @@
     };
   }
 
-  const TALLEST = BUILDING_PX.reduce((m, b) => Math.max(m, b.h), 0);
+  // Ridge runs along the long side of the minimum-area bounding rectangle.
+  function gableFor(poly) {
+    let best = null;
+    for (let i = 0; i < poly.length; i++) {
+      const a = poly[i], b = poly[(i + 1) % poly.length];
+      const len = Math.hypot(b.x - a.x, b.z - a.z);
+      if (len < 1e-4) continue;
+      const ux = (b.x - a.x) / len, uz = (b.z - a.z) / len;
+      let u0 = Infinity, u1 = -Infinity, v0 = Infinity, v1 = -Infinity;
+      poly.forEach((p) => {
+        const u = p.x * ux + p.z * uz, v = p.z * ux - p.x * uz;
+        u0 = Math.min(u0, u); u1 = Math.max(u1, u);
+        v0 = Math.min(v0, v); v1 = Math.max(v1, v);
+      });
+      const area = (u1 - u0) * (v1 - v0);
+      if (!best || area < best.area) best = { area, ux, uz, u0, u1, v0, v1 };
+    }
+    let nx, nz, lo, hi;
+    if (best.u1 - best.u0 >= best.v1 - best.v0) {
+      nx = -best.uz; nz = best.ux; lo = best.v0; hi = best.v1;
+    } else {
+      nx = best.ux; nz = best.uz; lo = best.u0; hi = best.u1;
+    }
+    const half = (hi - lo) / 2;
+    return { nx, nz, c: (lo + hi) / 2, half, pitch: clamp(half * 0.4, 0.5, 1.5) };
+  }
+
+  const BUILDINGS = BUILDING_PX.map((b) => {
+    const poly = b.pts.map((p) => toWorld(p[0], p[1]));
+    return {
+      name: b.name,
+      h: b.h,
+      shelter: !!b.shelter,
+      fenced: !!b.fenced,
+      poly,
+      gable: (b.shelter || b.fenced) ? null : gableFor(poly)
+    };
+  });
+
+  function roofY(b, x, z) {
+    const g = b.gable;
+    if (!g) return b.h;
+    const s = Math.abs(x * g.nx + z * g.nz - g.c);
+    return b.h + g.pitch * Math.max(0, 1 - s / g.half);
+  }
+
+  const TALLEST = BUILDINGS.reduce((m, b) => Math.max(m, b.h + (b.gable ? b.gable.pitch : 0)), 0);
   FLIGHT.maxY = TALLEST + FLIGHT.radius + 0.22;
   const FENCE_H = FLIGHT.maxY + 1.5;
-
-  const BUILDINGS = BUILDING_PX.map((b) => ({
-    name: b.name,
-    h: b.h,
-    shelter: !!b.shelter,
-    poly: b.pts.map((p) => toWorld(p[0], p[1]))
-  }));
   const FENCES = FENCE_PX.map((seg) => seg.map((p) => toWorld(p[0], p[1])));
   const PAD = toWorld(PAD_PX[0], PAD_PX[1]);
 
@@ -236,7 +279,8 @@
     }
   }
 
-  function collideBuilding(pos, vel, poly, height) {
+  function collideBuilding(pos, vel, building) {
+    const poly = building.poly;
     const radius = FLIGHT.radius;
     const inside = pointInPoly(pos.x, pos.z, poly);
     let best = Infinity, cx = 0, cz = 0;
@@ -247,12 +291,14 @@
       if (d < best) { best = d; cx = q.x; cz = q.z; }
     }
     if (!inside && best >= radius) return false;
+    const height = inside ? roofY(building, pos.x, pos.z) : roofY(building, cx, cz);
     if (pos.y - radius >= height) return false;
 
     const horizPen = inside ? (best + radius) : (radius - best);
     const vertPen = (height + radius) - pos.y;
-    // Near the top of a wall, step onto the roof so a climb can crest it.
-    if (pos.y >= height - 0.08 && vertPen <= horizPen + 0.3) {
+    // Near the top of a wall, step onto the roof so a climb can crest it; over the
+    // footprint above the eaves, ride the roof slope.
+    if (pos.y >= building.h - 0.08 && (inside || vertPen <= horizPen + 0.3)) {
       pos.y = height + radius;
       if (vel.y < 0) vel.y = 0;
       return true;
@@ -323,6 +369,32 @@
     return true;
   }
 
+  function collideLinkWall(pos, vel, a, b, height) {
+    if (pos.y - FLIGHT.radius >= height) return false;
+    const radius = FLIGHT.radius + LINK_HALF;
+    const q = closestOnSeg(pos.x, pos.z, a.x, a.z, b.x, b.z);
+    let nx = pos.x - q.x, nz = pos.z - q.z;
+    let dist = Math.hypot(nx, nz);
+    if (dist >= radius) return false;
+    if (pos.y >= height - 0.08) {
+      pos.y = height + FLIGHT.radius;
+      if (vel.y < 0) vel.y = 0;
+      return true;
+    }
+    if (dist < 1e-4) {
+      const sx = b.x - a.x, sz = b.z - a.z;
+      const sl = Math.hypot(sx, sz) || 1;
+      nx = -sz / sl; nz = sx / sl;
+      dist = 0;
+    } else {
+      nx /= dist; nz /= dist;
+    }
+    pos.x += nx * (radius - dist + 0.03);
+    pos.z += nz * (radius - dist + 0.03);
+    bounce(vel, nx, nz);
+    return true;
+  }
+
   function collideFence(pos, vel, a, b) {
     if (pos.y > FENCE_H) return false;
     const radius = FLIGHT.radius + FENCE_HALF;
@@ -354,7 +426,11 @@
           for (let k = 0; k < b.poly.length; k++) {
             if (collidePole(pos, vel, b.poly[k], b.h)) hit = true;
           }
-        } else if (collideBuilding(pos, vel, b.poly, b.h)) hit = true;
+        } else if (b.fenced) {
+          for (let k = 0; k < b.poly.length; k++) {
+            if (collideLinkWall(pos, vel, b.poly[k], b.poly[(k + 1) % b.poly.length], b.h)) hit = true;
+          }
+        } else if (collideBuilding(pos, vel, b)) hit = true;
       }
       for (let i = 0; i < FENCES.length; i++) {
         if (collideFence(pos, vel, FENCES[i][0], FENCES[i][1])) hit = true;
@@ -389,9 +465,15 @@
       root.appendChild(grass);
 
       BUILDINGS.forEach((b) => {
-        if (b.shelter) this.addPoles(root, b);
-        else this.addWalls(root, b);
-        this.addRoof(root, b);
+        if (b.shelter) {
+          this.addPoles(root, b);
+          this.addRoof(root, b);
+        } else if (b.fenced) {
+          this.addLinkWalls(root, b);
+        } else {
+          this.addWalls(root, b);
+          this.addGable(root, b);
+        }
       });
       FENCES.forEach((seg) => this.addFence(root, seg[0], seg[1]));
       this.addPad(root);
@@ -452,6 +534,134 @@
       const mesh = new THREE.Mesh(geo, mat);
       mesh.name = building.name;
       root.object3D.add(mesh);
+    },
+
+    addGable: function (root, building) {
+      const g = building.gable;
+      const side = (p) => p.x * g.nx + p.z * g.nz - g.c;
+      const clipHalf = (sign) => {
+        const out = [];
+        const poly = building.poly;
+        for (let i = 0; i < poly.length; i++) {
+          const p = poly[i], q = poly[(i + 1) % poly.length];
+          const sp = side(p) * sign, sq = side(q) * sign;
+          if (sp >= 0) out.push(p);
+          if ((sp >= 0) !== (sq >= 0)) {
+            const t = sp / (sp - sq);
+            out.push({ x: p.x + (q.x - p.x) * t, z: p.z + (q.z - p.z) * t });
+          }
+        }
+        return out;
+      };
+      const roofMat = new THREE.MeshStandardMaterial({
+        color: 0x8b919a, roughness: 0.95, metalness: 0.02, side: THREE.DoubleSide
+      });
+      [1, -1].forEach((sign) => {
+        const half = clipHalf(sign);
+        if (half.length < 3) return;
+        const shape = new THREE.Shape();
+        shape.moveTo(half[0].x, -half[0].z);
+        for (let i = 1; i < half.length; i++) shape.lineTo(half[i].x, -half[i].z);
+        const geo = new THREE.ShapeGeometry(shape);
+        geo.rotateX(-Math.PI / 2);
+        const pos = geo.attributes.position;
+        for (let i = 0; i < pos.count; i++) {
+          pos.setY(i, roofY(building, pos.getX(i), pos.getZ(i)) + 0.02);
+        }
+        geo.computeVertexNormals();
+        const mesh = new THREE.Mesh(geo, roofMat);
+        mesh.name = building.name;
+        root.object3D.add(mesh);
+      });
+
+      if (!this.brickTex) {
+        this.brickTex = new THREE.TextureLoader().load("quest/brick.jpg");
+        this.brickTex.wrapS = this.brickTex.wrapT = THREE.RepeatWrapping;
+        if ("colorSpace" in this.brickTex) this.brickTex.colorSpace = THREE.SRGBColorSpace;
+      }
+      const verts = [], uvs = [];
+      const poly = building.poly;
+      for (let i = 0; i < poly.length; i++) {
+        const a = poly[i], b = poly[(i + 1) % poly.length];
+        const pts = [a];
+        const sa = side(a), sb = side(b);
+        if ((sa > 0) !== (sb > 0) && Math.abs(sa - sb) > 1e-6) {
+          const t = sa / (sa - sb);
+          pts.push({ x: a.x + (b.x - a.x) * t, z: a.z + (b.z - a.z) * t });
+        }
+        pts.push(b);
+        let run = 0;
+        for (let k = 0; k < pts.length - 1; k++) {
+          const p = pts[k], q = pts[k + 1];
+          const yp = roofY(building, p.x, p.z), yq = roofY(building, q.x, q.z);
+          const len = Math.hypot(q.x - p.x, q.z - p.z);
+          if (Math.max(yp, yq) - building.h > 0.01 && len > 1e-4) {
+            const h0 = building.h, u0 = run / 1.7, u1 = (run + len) / 1.7;
+            verts.push(p.x, h0, p.z, q.x, h0, q.z, q.x, yq, q.z, p.x, h0, p.z, q.x, yq, q.z, p.x, yp, p.z);
+            uvs.push(u0, h0 / 1.15, u1, h0 / 1.15, u1, yq / 1.15, u0, h0 / 1.15, u1, yq / 1.15, u0, yp / 1.15);
+          }
+          run += len;
+        }
+      }
+      if (!verts.length) return;
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute("position", new THREE.Float32BufferAttribute(verts, 3));
+      geo.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
+      geo.computeVertexNormals();
+      const ends = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({
+        map: this.brickTex, roughness: 0.92, metalness: 0, side: THREE.DoubleSide
+      }));
+      root.object3D.add(ends);
+    },
+
+    addLinkWalls: function (root, building) {
+      if (!this.linkTex) {
+        const c = document.createElement("canvas");
+        c.width = c.height = 64;
+        const ctx = c.getContext("2d");
+        ctx.strokeStyle = "rgba(203, 213, 225, 0.9)";
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(0, 0); ctx.lineTo(64, 64);
+        ctx.moveTo(64, 0); ctx.lineTo(0, 64);
+        ctx.stroke();
+        this.linkTex = new THREE.CanvasTexture(c);
+        this.linkTex.wrapS = this.linkTex.wrapT = THREE.RepeatWrapping;
+      }
+      const poly = building.poly;
+      const h = building.h;
+      for (let i = 0; i < poly.length; i++) {
+        const a = poly[i], b = poly[(i + 1) % poly.length];
+        const len = Math.hypot(b.x - a.x, b.z - a.z);
+        if (len < 0.05) continue;
+        const tex = this.linkTex.clone();
+        tex.needsUpdate = true;
+        tex.repeat.set(len / 0.5, h / 0.5);
+        const mesh = new THREE.Mesh(new THREE.PlaneGeometry(len, h), new THREE.MeshStandardMaterial({
+          map: tex, color: 0xcbd5e1, transparent: true, opacity: 0.85, alphaTest: 0.05,
+          side: THREE.DoubleSide, depthWrite: false, roughness: 0.6, metalness: 0.5
+        }));
+        mesh.position.set((a.x + b.x) / 2, h / 2, (a.z + b.z) / 2);
+        mesh.rotation.y = Math.atan2(-(b.z - a.z), b.x - a.x);
+        mesh.name = building.name;
+        root.object3D.add(mesh);
+
+        const rail = document.createElement("a-box");
+        rail.setAttribute("width", len);
+        rail.setAttribute("height", 0.06);
+        rail.setAttribute("depth", 0.06);
+        rail.setAttribute("position", `${(a.x + b.x) / 2} ${h} ${(a.z + b.z) / 2}`);
+        rail.setAttribute("rotation", `0 ${THREE.MathUtils.radToDeg(mesh.rotation.y)} 0`);
+        rail.setAttribute("material", "color: #94a3b8; roughness: 0.5; metalness: 0.6");
+        root.appendChild(rail);
+
+        const post = document.createElement("a-cylinder");
+        post.setAttribute("radius", 0.05);
+        post.setAttribute("height", h);
+        post.setAttribute("position", `${a.x} ${h / 2} ${a.z}`);
+        post.setAttribute("material", "color: #94a3b8; roughness: 0.5; metalness: 0.6");
+        root.appendChild(post);
+      }
     },
 
     addFence: function (root, a, b) {

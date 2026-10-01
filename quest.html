@@ -72,8 +72,8 @@
   </div>
   <button id="enter-vr" type="button">Enter VR</button>
   <div id="help">
-    <b>Quest.</b> Right stick: turn left/right, push forward to fly. Left stick: push forward to descend, pull back to climb.<br>
-    <b>Desktop.</b> A turns left, D turns right, W flies toward the nose, Space climbs, Shift descends. On-screen sticks match the controllers: right knob up flies forward, left knob up descends and down climbs. Collect every coin, then return to the pad. The timer records that finish.
+    <b>Quest.</b> Look where you want to go and the rocket's nose follows. Left stick: turn left/right, push forward to fly. Right stick: push forward to descend, pull back to climb.<br>
+    <b>Desktop.</b> A turns left, D turns right, W flies toward the nose, Space climbs, Shift descends. On-screen sticks match the controllers: left knob turns and up flies forward, right knob up descends and down climbs. Collect every coin, then return to the pad. The timer records that finish.
   </div>
   <div id="finish">
     <div class="card">
@@ -83,8 +83,8 @@
       <ol id="finish-board"></ol>
     </div>
   </div>
-  <div id="stick-left" class="stick" aria-label="Altitude stick"><div class="knob"></div><span>ALTITUDE</span></div>
-  <div id="stick-right" class="stick" aria-label="Flight stick"><div class="knob"></div><span>TURN / FLY</span></div>
+  <div id="stick-left" class="stick" aria-label="Flight stick"><div class="knob"></div><span>TURN / FLY</span></div>
+  <div id="stick-right" class="stick" aria-label="Altitude stick"><div class="knob"></div><span>ALTITUDE</span></div>
 
   <script>
   const IMG_W = 1928;
@@ -105,19 +105,20 @@
 
   // Pixel footprints traced from the magenta overlay aligned to school.png.
   // Heights are rough: halls taller than low rooms. Tallest is the central hall.
+  // The shelter (easternmost) has no walls: a blue roof on four corner poles.
   const BUILDING_PX = [
-    { name: "Central hall", h: 8.8, pts: [[902,782],[782,526],[451,699],[455,778],[568,794],[569,863],[816,864],[819,789]] },
-    { name: "South hall", h: 7.4, pts: [[839,998],[247,1200],[293,1338],[887,1134]] },
-    { name: "North hall", h: 7.0, pts: [[536,279],[463,283],[485,547],[564,544]] },
-    { name: "East block", h: 5.8, pts: [[961,944],[963,1129],[1118,1128],[1116,944]] },
-    { name: "West block", h: 5.8, pts: [[69,947],[69,1169],[183,1169],[185,947]] },
-    { name: "East rooms", h: 5.4, pts: [[1167,918],[1169,1128],[1309,1129],[1307,918],[1263,918],[1261,1019],[1212,1017],[1212,918]] },
-    { name: "Southwest rooms", h: 4.2, pts: [[74,1177],[74,1331],[181,1332],[182,1177]] },
-    { name: "West rooms", h: 4.6, pts: [[401,669],[244,674],[246,775],[405,770]] },
-    { name: "Southeast rooms", h: 4.4, pts: [[1538,1099],[1531,1196],[1670,1205],[1674,1113]] },
-    { name: "Small west", h: 3.4, pts: [[283,930],[192,931],[191,1020],[285,1020]] },
-    { name: "Small west upper", h: 3.4, pts: [[192,840],[192,922],[285,922],[284,840]] },
-    { name: "Low link", h: 3.0, pts: [[571,582],[476,626],[494,666],[588,618]] }
+    { name: "Central hall", h: 4.4, pts: [[902,782],[782,526],[451,699],[455,778],[568,794],[569,863],[816,864],[819,789]] },
+    { name: "South hall", h: 3.7, pts: [[839,998],[247,1200],[293,1338],[887,1134]] },
+    { name: "North hall", h: 3.5, pts: [[536,279],[463,283],[485,547],[564,544]] },
+    { name: "East block", h: 2.9, pts: [[961,944],[963,1129],[1118,1128],[1116,944]] },
+    { name: "West block", h: 2.9, pts: [[69,947],[69,1169],[183,1169],[185,947]] },
+    { name: "East rooms", h: 2.7, pts: [[1167,918],[1169,1128],[1309,1129],[1307,918],[1263,918],[1261,1019],[1212,1017],[1212,918]] },
+    { name: "Southwest rooms", h: 2.1, pts: [[74,1177],[74,1331],[181,1332],[182,1177]] },
+    { name: "West rooms", h: 2.3, pts: [[401,669],[244,674],[246,775],[405,770]] },
+    { name: "Southeast shelter", h: 2.2, shelter: true, pts: [[1538,1099],[1531,1196],[1670,1205],[1674,1113]] },
+    { name: "Small west", h: 1.7, pts: [[283,930],[192,931],[191,1020],[285,1020]] },
+    { name: "Small west upper", h: 1.7, pts: [[192,840],[192,922],[285,922],[284,840]] },
+    { name: "Low link", h: 1.5, pts: [[571,582],[476,626],[494,666],[588,618]] }
   ];
 
   // Street frontage along the bottom of the photo, plus the short returns at the inner ends.
@@ -147,6 +148,10 @@
   const PAD_R = 5.0;
   const COIN_R = 2.35;
   const FENCE_HALF = 0.32;
+  const ROOF_T = 0.12;
+  const ROOF_UNDER = 0.3;
+  const POLE_R = 0.14;
+  const HEAD_STEER = { deadzone: 0.07, smooth: 10, ease: 2.2 };
   const TIMES_KEY = "quest-rocketeer-times";
   const HALF_W = MAP_W / 2;
   const HALF_D = MAP_D / 2;
@@ -165,6 +170,7 @@
   const BUILDINGS = BUILDING_PX.map((b) => ({
     name: b.name,
     h: b.h,
+    shelter: !!b.shelter,
     poly: b.pts.map((p) => toWorld(p[0], p[1]))
   }));
   const FENCES = FENCE_PX.map((seg) => seg.map((p) => toWorld(p[0], p[1])));
@@ -263,6 +269,60 @@
     return true;
   }
 
+  // Thin roof slab: approached from below, only the pilot's head clearance (ROOF_UNDER) counts.
+  function collideRoof(pos, vel, poly, height) {
+    const radius = FLIGHT.radius;
+    const top = height + ROOF_T / 2;
+    const bottom = height - ROOF_T / 2;
+    if (pos.y - radius >= top || pos.y + ROOF_UNDER <= bottom) return false;
+    const inside = pointInPoly(pos.x, pos.z, poly);
+    let best = Infinity, cx = 0, cz = 0;
+    for (let i = 0; i < poly.length; i++) {
+      const a = poly[i], b = poly[(i + 1) % poly.length];
+      const q = closestOnSeg(pos.x, pos.z, a.x, a.z, b.x, b.z);
+      const d = Math.hypot(pos.x - q.x, pos.z - q.z);
+      if (d < best) { best = d; cx = q.x; cz = q.z; }
+    }
+    if (!inside && best >= radius) return false;
+
+    const horizPen = inside ? (best + radius) : (radius - best);
+    const upPen = top + radius - pos.y;
+    const downPen = pos.y + ROOF_UNDER - bottom;
+    if (upPen <= horizPen && upPen <= downPen) {
+      pos.y = top + radius;
+      if (vel.y < 0) vel.y = 0;
+      return true;
+    }
+    if (downPen <= horizPen) {
+      pos.y = bottom - ROOF_UNDER;
+      if (vel.y > 0) vel.y = 0;
+      return true;
+    }
+    let nx = inside ? (cx - pos.x) : (pos.x - cx);
+    let nz = inside ? (cz - pos.z) : (pos.z - cz);
+    let len = Math.hypot(nx, nz);
+    if (len < 1e-5) { nx = 1; nz = 0; len = 1; }
+    nx /= len; nz /= len;
+    pos.x += nx * (horizPen + 0.03);
+    pos.z += nz * (horizPen + 0.03);
+    bounce(vel, nx, nz);
+    return true;
+  }
+
+  function collidePole(pos, vel, p, height) {
+    if (pos.y - FLIGHT.radius >= height) return false;
+    const radius = FLIGHT.radius + POLE_R;
+    let nx = pos.x - p.x, nz = pos.z - p.z;
+    let dist = Math.hypot(nx, nz);
+    if (dist >= radius) return false;
+    if (dist < 1e-4) { nx = 1; nz = 0; dist = 0; }
+    else { nx /= dist; nz /= dist; }
+    pos.x += nx * (radius - dist + 0.03);
+    pos.z += nz * (radius - dist + 0.03);
+    bounce(vel, nx, nz);
+    return true;
+  }
+
   function collideFence(pos, vel, a, b) {
     if (pos.y > FENCE_H) return false;
     const radius = FLIGHT.radius + FENCE_HALF;
@@ -288,7 +348,13 @@
     for (let pass = 0; pass < 4; pass++) {
       let hit = false;
       for (let i = 0; i < BUILDINGS.length; i++) {
-        if (collideBuilding(pos, vel, BUILDINGS[i].poly, BUILDINGS[i].h)) hit = true;
+        const b = BUILDINGS[i];
+        if (b.shelter) {
+          if (collideRoof(pos, vel, b.poly, b.h)) hit = true;
+          for (let k = 0; k < b.poly.length; k++) {
+            if (collidePole(pos, vel, b.poly[k], b.h)) hit = true;
+          }
+        } else if (collideBuilding(pos, vel, b.poly, b.h)) hit = true;
       }
       for (let i = 0; i < FENCES.length; i++) {
         if (collideFence(pos, vel, FENCES[i][0], FENCES[i][1])) hit = true;
@@ -323,7 +389,8 @@
       root.appendChild(grass);
 
       BUILDINGS.forEach((b) => {
-        this.addWalls(root, b);
+        if (b.shelter) this.addPoles(root, b);
+        else this.addWalls(root, b);
         this.addRoof(root, b);
       });
       FENCES.forEach((seg) => this.addFence(root, seg[0], seg[1]));
@@ -353,6 +420,18 @@
       }
     },
 
+    addPoles: function (root, building) {
+      building.poly.forEach((p) => {
+        const pole = document.createElement("a-cylinder");
+        pole.setAttribute("class", "shelter-pole");
+        pole.setAttribute("radius", POLE_R);
+        pole.setAttribute("height", building.h);
+        pole.setAttribute("position", `${p.x} ${building.h / 2} ${p.z}`);
+        pole.setAttribute("material", "color: #e2e8f0; roughness: 0.5; metalness: 0.3");
+        root.appendChild(pole);
+      });
+    },
+
     addRoof: function (root, building) {
       const poly = building.poly.slice();
       let area = 0;
@@ -368,7 +447,7 @@
       geo.rotateX(-Math.PI / 2);
       geo.translate(0, building.h + 0.02, 0);
       const mat = new THREE.MeshStandardMaterial({
-        color: 0x8b919a, roughness: 0.95, metalness: 0.02, side: THREE.DoubleSide
+        color: building.shelter ? 0x2563eb : 0x8b919a, roughness: 0.95, metalness: 0.02, side: THREE.DoubleSide
       });
       const mesh = new THREE.Mesh(geo, mat);
       mesh.name = building.name;
@@ -584,6 +663,10 @@
       this.velocity = new THREE.Vector3();
       this.forwardSpeed = 0;
       this.yaw = 0;
+      this.headYaw = 0;
+      this.steerOffset = 0;
+      this._camQuat = new THREE.Quaternion();
+      this._headDir = new THREE.Vector3();
       this.state = "ready";
       this.score = 0;
       this.startedAt = 0;
@@ -617,6 +700,9 @@
         this.touchStick.ry = 0;
         this.touchStick.lx = 0;
         this.touchStick.ly = 0;
+        this.yaw += this.steerOffset;
+        this.steerOffset = 0;
+        this.headYaw = 0;
       });
       const enter = document.getElementById("enter-vr");
       enter.addEventListener("click", () => scene.enterVR());
@@ -639,6 +725,7 @@
       window.QUEST = {
         get: () => ({
           x: this.lastPos.x, y: this.lastPos.y, z: this.lastPos.z, yaw: this.yaw,
+          heading: this.yaw + this.steerOffset,
           vx: this.velocity.x, vz: this.velocity.z, forwardSpeed: this.forwardSpeed,
           score: this.score, state: this.state, elapsed: this.displayedSeconds(),
           keys: { ...this.keys },
@@ -752,12 +839,12 @@
       if (this.screen.right) { rx += this.screen.rx; ry += this.screen.ry; }
       if (this.screen.left) { lx += this.screen.lx; ly += this.screen.ly; }
 
-      // Right stick: +x turns right, push forward (negative y) flies forward.
-      // Left stick: push forward descends, pull back climbs. Screen y is +down,
+      // Left stick: +x turns right, push forward (negative y) flies forward.
+      // Right stick: push forward descends, pull back climbs. Screen y is +down,
       // which matches the gamepad (negative = pushed forward).
-      let turn = deadzone(rx);
-      let forward = Math.max(0, -deadzone(ry));
-      let climb = deadzone(ly);
+      let turn = deadzone(lx);
+      let forward = Math.max(0, -deadzone(ly));
+      let climb = deadzone(ry);
       if (this.keys.left) turn -= 1;
       if (this.keys.right) turn += 1;
       if (this.keys.forward) forward = 1;
@@ -768,6 +855,22 @@
         forward: clamp(forward, 0, 1),
         climb: clamp(climb, -1, 1)
       };
+    },
+
+    // In VR the ship (not the rig) eases toward head yaw, so turning it never swings the view
+    // and the head offset settles once the nose lines up with the look direction.
+    updateHeadSteer: function (dt) {
+      if (!this.el.sceneEl.is("vr-mode")) return;
+      this._camQuat.copy(this.cameraEl.object3D.quaternion);
+      this._headDir.set(0, 0, -1).applyQuaternion(this._camQuat);
+      if (Math.hypot(this._headDir.x, this._headDir.z) < 0.2) return;
+      const raw = Math.atan2(-this._headDir.x, -this._headDir.z);
+      const wrap = (a) => Math.atan2(Math.sin(a), Math.cos(a));
+      this.headYaw = wrap(this.headYaw + wrap(raw - this.headYaw) * (1 - Math.exp(-HEAD_STEER.smooth * dt)));
+      const diff = wrap(this.headYaw - this.steerOffset);
+      if (Math.abs(diff) <= HEAD_STEER.deadzone) return;
+      const goal = diff - Math.sign(diff) * HEAD_STEER.deadzone;
+      this.steerOffset = wrap(this.steerOffset + goal * (1 - Math.exp(-HEAD_STEER.ease * dt)));
     },
 
     viewpoint: function () {
@@ -835,10 +938,10 @@
       document.getElementById("vr-banner-rank").setAttribute("value", rankText);
       banner.setAttribute("visible", "true");
       banner.removeAttribute("animation__pop");
-      banner.setAttribute("animation__pop", "property: scale; from: 0.15 0.15 0.15; to: 1 1 1; dur: 900; easing: easeOutElastic");
+      banner.setAttribute("animation__pop", "property: scale; from: 0.45 0.45 0.45; to: 3 3 3; dur: 900; easing: easeOutElastic");
       clearTimeout(this.bannerTimer);
       this.bannerTimer = setTimeout(() => {
-        banner.setAttribute("animation__pop", "property: scale; from: 1 1 1; to: 0.001 0.001 0.001; dur: 500; easing: easeInBack");
+        banner.setAttribute("animation__pop", "property: scale; from: 3 3 3; to: 0.001 0.001 0.001; dur: 500; easing: easeInBack");
         setTimeout(() => banner.setAttribute("visible", "false"), 520);
       }, 9000);
     },
@@ -895,11 +998,9 @@
       this.yaw = Math.atan2(Math.sin(this.yaw), Math.cos(this.yaw));
       rig.rotation.y = this.yaw;
       rig.updateMatrixWorld(true);
-      this.nose.set(0, 0, -1).applyQuaternion(rig.quaternion);
-      this.nose.y = 0;
-      const noseLen = Math.hypot(this.nose.x, this.nose.z);
-      if (noseLen < 1e-6) this.nose.set(0, 0, -1);
-      else { this.nose.x /= noseLen; this.nose.z /= noseLen; }
+      this.updateHeadSteer(dt);
+      const heading = this.yaw + this.steerOffset;
+      this.nose.set(-Math.sin(heading), 0, -Math.cos(heading));
 
       // Speed stays on the visual nose. Turning swings that velocity with the facing.
       this.forwardSpeed *= Math.exp(-FLIGHT.drag * dt);
@@ -914,6 +1015,7 @@
 
       const ship = document.getElementById("ship");
       if (ship) {
+        ship.object3D.rotation.y = this.steerOffset;
         const roll = -input.turn * 0.22;
         ship.object3D.rotation.z = THREE.MathUtils.lerp(ship.object3D.rotation.z, roll, 0.15);
         ship.object3D.rotation.x = THREE.MathUtils.lerp(ship.object3D.rotation.x, -input.climb * 0.08, 0.1);
@@ -973,8 +1075,8 @@
         wasd-controls="enabled: false"
         look-controls="enabled: false"
         camera="near: 0.03; far: 500; fov: 78">
-        <a-entity id="vr-hud" hud-layer="order: 900" position="0 -0.3 -1" rotation="14 0 0">
-          <a-plane width="0.74" height="0.2" material="color: #081020; opacity: 0.82; transparent: true; shader: flat"></a-plane>
+        <a-entity id="vr-hud" hud-layer="order: 900" position="0 0.26 -1" rotation="-14 0 0">
+          <a-plane width="0.74" height="0.2" material="color: #081020; opacity: 0.42; transparent: true; shader: flat"></a-plane>
           <a-plane width="0.76" height="0.012" position="0 0.1 0.001" material="color: #38bdf8; shader: flat"></a-plane>
           <a-text id="vr-coins" value="COINS 0 / 12" font="exo2bold" color="#fde68a"
             align="left" anchor="left" width="0.66" wrap-count="22" position="-0.34 0.035 0.002"></a-text>
@@ -983,7 +1085,7 @@
           <a-text id="vr-status" value="On the pad" font="exo2bold" color="#7dd3fc"
             align="center" width="0.66" wrap-count="38" position="0 -0.05 0.002"></a-text>
         </a-entity>
-        <a-entity id="vr-banner" hud-layer="order: 950" visible="false" position="0 0.2 -2.3" scale="0.001 0.001 0.001">
+        <a-entity id="vr-banner" hud-layer="order: 950" visible="false" position="0 0.6 -6.9" scale="0.001 0.001 0.001">
           <a-plane width="2.9" height="1.35" material="color: #0b1024; opacity: 0.88; transparent: true; shader: flat"></a-plane>
           <a-plane width="2.98" height="0.05" position="0 0.66 0.001" material="color: #fbbf24; shader: flat"></a-plane>
           <a-plane width="2.98" height="0.05" position="0 -0.66 0.001" material="color: #f43f5e; shader: flat"></a-plane>
